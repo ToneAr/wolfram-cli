@@ -4,6 +4,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -153,24 +154,13 @@ fn print_welcome(
     kernel: &SharedKernel,
     frontend: Option<&Arc<Mutex<FrontEndClient>>>,
 ) -> Result<()> {
-    println!("
-
-                                    ,...
-`7MMF\'    A     `7MF\'     `7MM    .d\' \"\"                                  .M\"\"\"bgd                    db             mm
- `MA     ,MA     ,V         MM    dM`                                    ,MI    \"Y                                   MM
-  VM:   ,VVM:   ,V ,pW\"Wq.  MM   mMMmm`7Mb,od8 ,6\"Yb.   7MMpMMMb.pMMMb.  `MMb.      ,p6\"bo `7Mb,od8 `7MM `7MMpdMAo.mmMMmm
-   MM.  M\' MM.  M\'6W\'   `Wb MM    MM    MM\' \"\'8)   MM    MM    MM    MM    `YMMNq. 6M\'  OO   MM\' \"\'   MM   MM   `Wb  MM
-   `MM A\'  `MM A\' 8M     M8 MM    MM    MM     ,pm9MM    MM    MM    MM  .     `MM 8M        MM       MM   MM    M8  MM
-    :MM;    :MM;  YA.   ,A9 MM    MM    MM    8M   MM    MM    MM    MM  Mb     dM YM.    ,  MM       MM   MM   ,AP  MM
-     VF      VF    `Ybmd9\'.JMML..JMML..JMML.  `Moo9^Yo..JMML  JMML  JMML.P\"Ybmmd\"   YMbmd\' .JMML.   .JMML. MMbmmd\'   `Mbmo
-                                                                                                           MM
-                                                                                                         .JMML.
-");
+    println!("\x1b[1;31mWolfram CLI\x1b[0m");
     println!(
         "Kernel: {} | FrontEnd: {}",
         kernel_status(kernel)?,
         frontend_status(frontend)?
     );
+    println!("Version: {}", env!("CARGO_PKG_VERSION"));
     println!("Type :help for commands, :quit or Ctrl-D to quit.\n");
     Ok(())
 }
@@ -969,36 +959,27 @@ impl KernelClient {
 }
 
 fn evaluate_with_subprocess(input: &str, line_number: Option<(usize, &ThemeHandle)>) -> Result<()> {
-    let marker = format!(
-        "\n__WOLFRAM_CLI_EVALUATION_COMPLETE_{}__\n",
-        std::process::id()
-    );
     let code = format!(
-        "WriteString[$Output, ToString[ToExpression[{}], OutputForm], \"\\n\"]",
+        "WriteString[$Output, ToString[ToExpression[{}], InputForm], \"\\n\"]",
         wolfram_string_literal(input)
     );
     let output = Command::new(kernel_path()?)
         .arg("-noprompt")
         .arg("-run")
-        .arg(format!(
-            "{code}; WriteString[$Output, {}]; Quit[]",
-            wolfram_string_literal(&marker)
-        ))
+        .arg(format!("{code}; Quit[]"))
         .output()
         .context("failed to launch WolframKernel")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let completed_stdout = strip_evaluation_complete_marker(&stdout, &marker);
-    let stdout_to_print = completed_stdout.unwrap_or(&stdout);
-    if let Some((line_number, theme)) = line_number.filter(|_| !stdout_to_print.is_empty()) {
+    if let Some((line_number, theme)) = line_number.filter(|_| !stdout.is_empty()) {
         print!("Out[{line_number}]= ");
-        print_highlighted(stdout_to_print.trim_end_matches('\n'), theme.current());
+        print_highlighted(stdout.trim_end_matches('\n'), theme.current());
     } else {
-        print!("{stdout_to_print}");
+        print!("{stdout}");
     }
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
 
-    if !output.status.success() || completed_stdout.is_none() {
+    if !output.status.success() {
         if let Some(code) = output.status.code() {
             return Err(KernelExit::new(code).into());
         }
@@ -1007,6 +988,7 @@ fn evaluate_with_subprocess(input: &str, line_number: Option<(usize, &ThemeHandl
     Ok(())
 }
 
+#[cfg(test)]
 fn strip_evaluation_complete_marker<'a>(stdout: &'a str, marker: &str) -> Option<&'a str> {
     stdout.strip_suffix(marker)
 }
@@ -2699,7 +2681,8 @@ mod native_wstp {
             input: &str,
             line_number: Option<(usize, &ThemeHandle)>,
         ) -> Result<()> {
-            let text = self.evaluate_to_string(input)?;
+            let result = self.evaluate_expr(input)?;
+            let text = self.expr_to_output_string(result)?;
             if !text.is_empty() {
                 if let Some((line_number, theme)) = line_number {
                     print!("Out[{line_number}]= ");
@@ -2716,11 +2699,107 @@ mod native_wstp {
                 "System`ToString",
                 vec![
                     call("System`ToExpression", vec![Expr::string(input)]),
-                    symbol("System`OutputForm"),
+                    symbol("System`InputForm"),
                 ],
             );
+            self.evaluate_packet_to_string(&expr)
+        }
+
+        fn evaluate_expr(&mut self, input: &str) -> Result<Expr> {
+            let wrapped_input = format!(
+                "Module[{{promptedInputString, promptedInput}}, SetAttributes[{{promptedInputString, promptedInput}}, HoldAll]; promptedInputString[prompt_] := (WriteString[$Output, ToString[Unevaluated[prompt], OutputForm]]; InputString[]); promptedInput[prompt_] := ToExpression[promptedInputString[prompt]]; ReleaseHold[ToExpression[{}, InputForm, HoldComplete] /. {{HoldPattern[InputString[prompt_]] :> promptedInputString[prompt], HoldPattern[Input[prompt_]] :> promptedInput[prompt]}}]]",
+                wolfram_string_literal(input)
+            );
+            let expr = call("System`ToExpression", vec![Expr::string(&wrapped_input)]);
             let link = self.link.as_mut().context("WSTP link is closed")?;
             link.put_eval_packet(&expr)
+                .map_err(|err| anyhow!("failed to send WSTP evaluate packet: {err:?}"))?;
+            link.flush()
+                .map_err(|err| anyhow!("failed to flush WSTP link: {err:?}"))?;
+
+            loop {
+                let packet = match link.raw_next_packet() {
+                    Ok(packet) => packet,
+                    Err(err) => {
+                        if let Some(code) =
+                            Self::child_exit_code_after_link_error(&mut self.process)
+                        {
+                            return Err(KernelExit::new(code).into());
+                        }
+                        return Err(anyhow!("failed to read WSTP packet: {err:?}"));
+                    }
+                };
+                match packet {
+                    sys::RETURNPKT => {
+                        let expr = link
+                            .get_expr_with_resolver(&mut |name| {
+                                (!name.contains('`'))
+                                    .then(|| Symbol::new(&format!("System`{name}")))
+                            })
+                            .map_err(|err| anyhow!("failed to read WSTP return value: {err:?}"))?;
+                        return Ok(expr);
+                    }
+                    sys::TEXTPKT | sys::RETURNTEXTPKT => {
+                        let text = link
+                            .get_string()
+                            .map_err(|err| anyhow!("failed to read WSTP text packet: {err:?}"))?;
+                        print!("{text}");
+                        io::stdout().flush().context("failed to flush stdout")?;
+                        link.new_packet()
+                            .map_err(|err| anyhow!("failed to finish WSTP text packet: {err:?}"))?;
+                    }
+                    sys::CALLPKT => {
+                        Self::handle_call_packet(link)?;
+                    }
+                    sys::INPUTNAMEPKT => {
+                        link.new_packet().map_err(|err| {
+                            anyhow!("failed to finish WSTP input name packet: {err:?}")
+                        })?;
+                    }
+                    sys::INPUTPKT | sys::INPUTSTRPKT => {
+                        let mut input = String::new();
+                        io::stdin()
+                            .read_line(&mut input)
+                            .context("failed to read stdin for Wolfram input request")?;
+                        let input = input.trim_end_matches(['\r', '\n']);
+                        link.new_packet().map_err(|err| {
+                            anyhow!("failed to finish WSTP input request packet: {err:?}")
+                        })?;
+                        link.put_str(input).map_err(|err| {
+                            anyhow!("failed to send WSTP input response: {err:?}")
+                        })?;
+                        link.end_packet().map_err(|err| {
+                            anyhow!("failed to finish WSTP input response: {err:?}")
+                        })?;
+                        link.flush().map_err(|err| {
+                            anyhow!("failed to flush WSTP input response: {err:?}")
+                        })?;
+                    }
+                    _ => {
+                        link.new_packet()
+                            .map_err(|err| anyhow!("failed to skip WSTP packet: {err:?}"))?;
+                    }
+                }
+            }
+        }
+
+        fn handle_call_packet(link: &mut Link) -> Result<()> {
+            let call_id = link
+                .get_expr()
+                .map_err(|err| anyhow!("failed to read WSTP call packet: {err:?}"))?;
+            link.new_packet()
+                .map_err(|err| anyhow!("failed to finish WSTP call packet: {err:?}"))?;
+            bail!("unsupported WSTP call packet: {call_id:?}")
+        }
+
+        fn expr_to_output_string(&mut self, expr: Expr) -> Result<String> {
+            let expr = call("System`ToString", vec![expr, symbol("System`InputForm")]);
+            self.evaluate_packet_to_string(&expr)
+        }
+
+        fn evaluate_packet_to_string(&mut self, expr: &Expr) -> Result<String> {
+            let link = self.link.as_mut().context("WSTP link is closed")?;
+            link.put_eval_packet(expr)
                 .map_err(|err| anyhow!("failed to send WSTP evaluate packet: {err:?}"))?;
             link.flush()
                 .map_err(|err| anyhow!("failed to flush WSTP link: {err:?}"))?;
@@ -2749,6 +2828,7 @@ mod native_wstp {
                             .get_string()
                             .map_err(|err| anyhow!("failed to read WSTP text packet: {err:?}"))?;
                         print!("{text}");
+                        io::stdout().flush().context("failed to flush stdout")?;
                         link.new_packet()
                             .map_err(|err| anyhow!("failed to finish WSTP text packet: {err:?}"))?;
                     }
