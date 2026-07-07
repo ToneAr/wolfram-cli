@@ -1,0 +1,20 @@
+[package]
+name = "wolfram-cli"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["wstp"]
+wstp = ["dep:wstp", "dep:wolfram-expr"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+nu-ansi-term = "0.50"
+reedline = "0.32"
+wstp = { version = "0.6.0-alpha.5", optional = true }
+wolfram-expr = { version = "=0.6.0-alpha.5", optional = true }
+wolfram-app-discovery = "0.6.0-alpha.5"
+
+[build-dependencies]
+wolfram-app-discovery = "0.6.0-alpha.5"
