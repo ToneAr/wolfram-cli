@@ -1,69 +1,168 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "build*"
+      - "test*"
       - "v*"
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  WOLFRAM_ENGINE_VERSION: "14.1.0"
+  WOLFRAM_ENGINE_PACKAGE_VERSION: "14.1.0.0"
+
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux-x86_64
-            os: ubuntu-latest
+            runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-          - name: linux-aarch64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+            systemid: Linux-x86-64
             archive: tar.gz
           - name: macos-x86_64
-            os: macos-latest
+            runner: macos-15-intel
             target: x86_64-apple-darwin
+            systemid: MacOSX-x86-64
             archive: tar.gz
           - name: macos-aarch64
-            os: macos-latest
+            runner: macos-15
             target: aarch64-apple-darwin
+            systemid: MacOSX-ARM64
             archive: tar.gz
           - name: windows-x86_64
-            os: windows-latest
+            runner: windows-latest
             target: x86_64-pc-windows-msvc
+            systemid: Windows-x86-64
             archive: zip
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Avoid Wolfram kernel activation during build scripts (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "WOLFRAM_KERNEL=/nonexistent/WolframKernel" >> "$GITHUB_ENV"
+
+      - name: Avoid Wolfram kernel activation during build scripts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'WOLFRAM_KERNEL=C:\nonexistent\WolframKernel.exe'
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install Linux cross linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Install Linux link dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
 
-      - name: Configure Linux cross linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Extract Linux WSTP CompilerAdditions
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          wstp_dir="$RUNNER_TEMP/wstp-${{ matrix.systemid }}"
+          mkdir -p "$wstp_dir"
+          docker run --rm --user root \
+            -v "$wstp_dir:/out" \
+            wolframresearch/wolframengine:${{ env.WOLFRAM_ENGINE_VERSION }} \
+            sh -lc 'cp -R /usr/local/Wolfram/WolframEngine/${{ env.WOLFRAM_ENGINE_VERSION }}/SystemFiles/Links/WSTP/DeveloperKit/Linux-x86-64/CompilerAdditions/. /out/'
+          test -f "$wstp_dir/libWSTP64i4.a"
+          echo "WSTP_COMPILER_ADDITIONS_DIRECTORY=$wstp_dir" >> "$GITHUB_ENV"
+          echo "Using WSTP CompilerAdditions: $wstp_dir"
+
+      - name: Extract macOS WSTP CompilerAdditions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="$RUNNER_TEMP/WolframEngine.dmg"
+          mount_dir="$RUNNER_TEMP/wolfram-engine-mount"
+          wstp_out="$RUNNER_TEMP/wstp-${{ matrix.systemid }}"
+          url="https://files.wolframcdn.com/packages/Homebrew/${{ env.WOLFRAM_ENGINE_PACKAGE_VERSION }}/WolframEngine_${{ env.WOLFRAM_ENGINE_VERSION }}_MAC.dmg"
+
+          curl --fail --location --retry 3 --output "$dmg" "$url"
+          mkdir -p "$mount_dir"
+          hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -quiet
+          trap 'hdiutil detach "$mount_dir" -quiet || true' EXIT
+
+          wstp_dir=$(find "$mount_dir" -path "*/SystemFiles/Links/WSTP/DeveloperKit/${{ matrix.systemid }}/CompilerAdditions" -type d -print -quit)
+          if [ -z "$wstp_dir" ]; then
+            echo "::error::Could not find ${{ matrix.systemid }} WSTP CompilerAdditions in the Wolfram Engine DMG."
+            find "$mount_dir" -path "*/SystemFiles/Links/WSTP/DeveloperKit/*" -type d -print || true
+            exit 1
+          fi
+
+          mkdir -p "$wstp_out"
+          cp -R "$wstp_dir"/. "$wstp_out"/
+          test -f "$wstp_out/libWSTP64i4.a"
+          echo "WSTP_COMPILER_ADDITIONS_DIRECTORY=$wstp_out" >> "$GITHUB_ENV"
+          echo "Using WSTP CompilerAdditions: $wstp_out"
+
+      - name: Extract Windows WSTP CompilerAdditions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'WolframEngine.msi'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'wolfram-engine'
+          $url = 'https://files.wolframcdn.com/packages/winget/${{ env.WOLFRAM_ENGINE_PACKAGE_VERSION }}/WolframEngine_${{ env.WOLFRAM_ENGINE_VERSION }}_WIN.msi'
+
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $process = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', $installer, '/qn', "TARGETDIR=$extractRoot", '/norestart') -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "msiexec administrative extraction failed with exit code $($process.ExitCode)"
+          }
+
+          $systemId = '${{ matrix.systemid }}'
+          $pattern = "\\SystemFiles\\Links\\WSTP\\DeveloperKit\\$([Regex]::Escape($systemId))\\CompilerAdditions$"
+          $wstpDir = Get-ChildItem -Path $extractRoot -Recurse -Directory -Filter CompilerAdditions |
+            Where-Object { $_.FullName -match $pattern } |
+            Select-Object -First 1
+
+          if (-not $wstpDir) {
+            Write-Error "Could not find $systemId WSTP CompilerAdditions in the Wolfram Engine MSI."
+            Get-ChildItem -Path $extractRoot -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -like '*SystemFiles*Links*WSTP*DeveloperKit*' } |
+              Select-Object -ExpandProperty FullName
+            exit 1
+          }
+
+          $lib = Get-ChildItem -Path $wstpDir.FullName -Filter '*WSTP*.lib' | Select-Object -First 1
+          if (-not $lib) {
+            Write-Error "No WSTP .lib file found in $($wstpDir.FullName)."
+            exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "WSTP_COMPILER_ADDITIONS_DIRECTORY=$($wstpDir.FullName)"
+          Write-Host "Using WSTP CompilerAdditions: $($wstpDir.FullName)"
 
       - name: Build
-        run: cargo build --release --no-default-features --locked --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: -C strip=symbols
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Test
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
-        run: cargo test --no-default-features --locked --target ${{ matrix.target }}
+        run: cargo test --locked --target ${{ matrix.target }}
 
       - name: Package Unix
-        if: matrix.archive == 'tar.gz'
+        if: matrix.archive == 'tar.gz' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build'))
         shell: bash
         run: |
           set -euo pipefail
@@ -74,7 +173,7 @@ jobs:
           tar -czf "$package.tar.gz" "$package"
 
       - name: Package Windows
-        if: matrix.archive == 'zip'
+        if: matrix.archive == 'zip' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build'))
         shell: pwsh
         run: |
           $package = "wolfram-cli-${{ matrix.name }}"
@@ -84,6 +183,7 @@ jobs:
           Compress-Archive -Path $package -DestinationPath "$package.zip"
 
       - name: Upload artifact
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build')
         uses: actions/upload-artifact@v4
         with:
           name: wolfram-cli-${{ matrix.name }}
@@ -92,7 +192,7 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build')
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -100,6 +200,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: wolfram-cli-*
           merge-multiple: true
 
       - name: Publish GitHub release

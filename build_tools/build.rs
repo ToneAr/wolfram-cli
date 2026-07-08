@@ -8,18 +8,14 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     let output_path = out_dir.join("builtin_symbols.tsv");
 
-    let code = r#"Module[{freqs = Association @ WolframLanguageData[All, "Frequencies"], symbols},
-  symbols = SortBy[Names["System`*"], {-Lookup[freqs, #, 0], #}&];
-  StringRiffle[(# <> "\t" <> ToString[Lookup[freqs, #, 0]]) & /@ symbols, "\n"]
-]"#;
+    println!("cargo:rerun-if-changed=build_tools/wl/builtin_symbols.wl");
+    println!("cargo:rerun-if-changed=build_tools/wl/query_to_output_form.wl");
+    let code = include_str!("wl/builtin_symbols.wl");
 
     let output = Command::new(kernel_path())
         .arg("-noprompt")
         .arg("-run")
-        .arg(format!(
-            "WriteString[$Output, ToString[{}, OutputForm]]; Quit[]",
-            code
-        ))
+        .arg(include_str!("wl/query_to_output_form.wl").replace("__CODE__", code))
         .output();
 
     match output {

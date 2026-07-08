@@ -1,10 +1,7 @@
-# personal-project-WOLFRAMSCRIPT-2
-
-WolframScript but better
-
+# Wolfram CLI
 ## Usage
 
-Start the interactive REPL. By default this uses the native WSTP backend and keeps a kernel session alive for REPL state:
+Start the interactive REPL. This uses the native WSTP backend and keeps a kernel session alive for REPL state:
 
 ```sh
 cargo run
@@ -22,13 +19,7 @@ Run a script file through `wolframscript`:
 cargo run -- path/to/script.wls -- arg1 arg2
 ```
 
-Build without WSTP and use subprocess evaluation instead:
 
-```sh
-cargo run --no-default-features -- -e '1+1'
-```
-
-The subprocess build still runs script files through `wolframscript`, but expression evaluation does not preserve REPL state between inputs.
 
 ## Completion
 
@@ -50,9 +41,7 @@ Options[head]
 
 For example, `Plot[x, {x, 0, 1}, PlotR` can complete `PlotRange`.
 
-By default the REPL also initializes Wolfram FrontEnd services in the background when they can be discovered. This is used as the boundary for FrontEnd-backed functionality such as special argument completions and future graphics rendering without opening a notebook window. If the FrontEnd cannot be initialized, completion falls back to the kernel-only engine.
-
-FrontEnd special argument completions are loaded from readable Wolfram installation files that register `FEPrivate`AddSpecialArgCompletion`. Color, file, and directory completion classes are surfaced as typed suggestions with rudimentary styling. These definitions are private Wolfram APIs, so coverage can vary by Wolfram version and installation layout.
+By default the REPL also initializes Wolfram FrontEnd services in the background when they can be discovered. This is used as the boundary for future FrontEnd-backed functionality such as graphics rendering without opening a notebook window. If the FrontEnd cannot be initialized, the REPL continues with the kernel-only engine.
 
 Disable FrontEnd integration and use the simpler kernel-only completion engine with:
 
@@ -65,6 +54,7 @@ cargo run -- --no-frontend
 Lines that start with `:` are handled by the CLI instead of being evaluated as Wolfram Language input:
 
 ```text
+:clear
 :help
 :theme
 :theme dark|light|solarized|gruvbox|monokai|plain
@@ -73,7 +63,7 @@ Lines that start with `:` are handled by the CLI instead of being evaluated as W
 :quit
 ```
 
-`:theme` cycles the syntax highlighting theme. `:theme list` previews available themes. `:quit` exits the REPL; `Exit`, `Quit`, and Ctrl-D are also supported.
+`:clear` clears the console. `:theme` cycles the syntax highlighting theme. `:theme list` previews available themes. `:quit` exits the REPL; `Exit`, `Quit`, and Ctrl-D are also supported.
 
 Command completions are available only when the line starts with `:`. Wolfram Language completions are disabled for those command lines.
 
@@ -83,10 +73,30 @@ Set `WOLFRAM_KERNEL` to override the kernel executable. Without that override, t
 
 Set `WOLFRAM_FRONTEND` to override the FrontEnd executable used for FrontEnd-backed completions and rendering support.
 
-The `wstp` crate must be able to discover Wolfram's WSTP SDK for the default build. If that is not available, use `cargo run --no-default-features` for the subprocess fallback.
+The `wstp` crate links Wolfram's WSTP static library at build time. A build machine must have a Wolfram installation or WSTP SDK for the Rust target being built. If discovery does not find it, set `WSTP_COMPILER_ADDITIONS_DIRECTORY` to the target's `SystemFiles/Links/WSTP/DeveloperKit/<SystemID>/CompilerAdditions` directory.
+
+Runtime expression evaluation requires WSTP; there is no subprocess fallback.
 
 ## Release Builds
 
-GitHub Actions builds packaged binaries for Linux, macOS, and Windows when a `v*` tag is pushed or the release workflow is run manually. Release artifacts are built with `--no-default-features` so CI does not need a Wolfram installation or WSTP SDK.
+GitHub Actions builds packaged binaries for Linux, macOS, and Windows when a `v*` or `build*` tag is pushed. `test*` tags and manual workflow runs exercise the build/test path without packaging or publishing artifacts, unless the manual run is explicitly started from a `v*` or `build*` tag ref.
 
-The packaged binary locates the user's Wolfram installation at runtime using the discovery behavior above. Script files still require `wolframscript` on `PATH` because they are delegated to Wolfram's script runner.
+Release builds require self-hosted runners with Wolfram/WSTP SDKs installed because GitHub-hosted runners do not include Wolfram and `wstp-sys` links the target WSTP static library during `cargo build`. Each release target runs on a self-hosted runner for that OS/architecture, labeled `wolfram-wstp` in addition to the standard GitHub runner labels.
+
+| Artifact | Required runner labels | Rust target | WSTP SystemID directory |
+| --- | --- | --- | --- |
+| `linux-x86_64` | `self-hosted`, `Linux`, `X64`, `wolfram-wstp` | `x86_64-unknown-linux-gnu` | `Linux-x86-64` |
+| `linux-aarch64` | `self-hosted`, `Linux`, `ARM64`, `wolfram-wstp` | `aarch64-unknown-linux-gnu` | `Linux-ARM64` |
+| `macos-x86_64` | `self-hosted`, `macOS`, `X64`, `wolfram-wstp` | `x86_64-apple-darwin` | `MacOSX-x86-64` |
+| `macos-aarch64` | `self-hosted`, `macOS`, `ARM64`, `wolfram-wstp` | `aarch64-apple-darwin` | `MacOSX-ARM64` |
+| `windows-x86_64` | `self-hosted`, `Windows`, `X64`, `wolfram-wstp` | `x86_64-pc-windows-msvc` | `Windows-x86-64` |
+
+Before starting each self-hosted runner service, export `WSTP_COMPILER_ADDITIONS_DIRECTORY` to the matching target directory, for example:
+
+```sh
+export WSTP_COMPILER_ADDITIONS_DIRECTORY=/usr/local/Wolfram/Mathematica/14.1/SystemFiles/Links/WSTP/DeveloperKit/Linux-x86-64/CompilerAdditions
+```
+
+Linux runners also need the system `uuid` library available for linking, for example the `uuid-dev` package on Debian/Ubuntu systems.
+
+The packaged binary locates the user's Wolfram installation at runtime using the discovery behavior above. Expression, REPL, and completion evaluation run over WSTP; script files are delegated to `wolframscript`.
