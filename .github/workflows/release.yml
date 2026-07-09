@@ -13,8 +13,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  WOLFRAM_ENGINE_VERSION: "14.1.0"
-  WOLFRAM_ENGINE_PACKAGE_VERSION: "14.1.0.0"
+  WOLFRAM_ENGINE_VERSION: "15.0.0"
+  WOLFRAM_ENGINE_PACKAGE_VERSION: "15.0.0.0"
 
 jobs:
   build:
@@ -82,7 +82,16 @@ jobs:
           docker run --rm --user root \
             -v "$wstp_dir:/out" \
             wolframresearch/wolframengine:${{ env.WOLFRAM_ENGINE_VERSION }} \
-            sh -lc 'cp -R /usr/local/Wolfram/WolframEngine/${{ env.WOLFRAM_ENGINE_VERSION }}/SystemFiles/Links/WSTP/DeveloperKit/Linux-x86-64/CompilerAdditions/. /out/'
+            sh -lc '
+              set -e
+              src=$(find /usr/local/Wolfram -maxdepth 10 -type d -path "*/SystemFiles/Links/WSTP/DeveloperKit/Linux-x86-64/CompilerAdditions" -print -quit)
+              if [ -z "$src" ]; then
+                echo "Could not find Linux-x86-64 WSTP CompilerAdditions in the Wolfram Engine image." >&2
+                find /usr/local/Wolfram -path "*/SystemFiles/Links/WSTP/DeveloperKit/*" -type d >&2 || true
+                exit 1
+              fi
+              cp -R "$src/." /out/
+            '
           test -f "$wstp_dir/libWSTP64i4.a"
           echo "WSTP_COMPILER_ADDITIONS_DIRECTORY=$wstp_dir" >> "$GITHUB_ENV"
           echo "Using WSTP CompilerAdditions: $wstp_dir"
@@ -98,8 +107,12 @@ jobs:
           url="https://files.wolframcdn.com/packages/Homebrew/${{ env.WOLFRAM_ENGINE_PACKAGE_VERSION }}/WolframEngine_${{ env.WOLFRAM_ENGINE_VERSION }}_MAC.dmg"
 
           curl --fail --location --retry 3 --output "$dmg" "$url"
+          ls -lh "$dmg"
+          df -h "$RUNNER_TEMP"
+          hdiutil imageinfo "$dmg"
+
           mkdir -p "$mount_dir"
-          hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -quiet
+          hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -readonly -noverify
           trap 'hdiutil detach "$mount_dir" -quiet || true' EXIT
 
           wstp_dir=$(find "$mount_dir" -path "*/SystemFiles/Links/WSTP/DeveloperKit/${{ matrix.systemid }}/CompilerAdditions" -type d -print -quit)
@@ -120,12 +133,25 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:RUNNER_TEMP 'WolframEngine.msi'
+          # Starting with Wolfram Engine 15.0, the winget installer is a .zip containing
+          # a Burn bootstrapper .exe plus the underlying .msi and its external .cab files
+          # (rather than a single self-contained .msi). Download the archive, expand it,
+          # and run an administrative install against the .msi so it pulls its payload
+          # from the sibling .cab files, exactly as the old single-file .msi did.
+          $archive = Join-Path $env:RUNNER_TEMP 'WolframEngine.zip'
+          $extractSrc = Join-Path $env:RUNNER_TEMP 'wolfram-engine-installer'
           $extractRoot = Join-Path $env:RUNNER_TEMP 'wolfram-engine'
-          $url = 'https://files.wolframcdn.com/packages/winget/${{ env.WOLFRAM_ENGINE_PACKAGE_VERSION }}/WolframEngine_${{ env.WOLFRAM_ENGINE_VERSION }}_WIN.msi'
+          $url = 'https://files.wolframcdn.com/packages/winget/${{ env.WOLFRAM_ENGINE_PACKAGE_VERSION }}/WolframEngine_${{ env.WOLFRAM_ENGINE_VERSION }}_WIN.zip'
 
-          Invoke-WebRequest -Uri $url -OutFile $installer
-          $process = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', $installer, '/qn', "TARGETDIR=$extractRoot", '/norestart') -Wait -PassThru
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $extractSrc
+
+          $msi = Get-ChildItem -Path $extractSrc -Filter '*.msi' | Select-Object -First 1
+          if (-not $msi) {
+            throw "No .msi file found in the downloaded Wolfram Engine archive."
+          }
+
+          $process = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', $msi.FullName, '/qn', "TARGETDIR=$extractRoot", '/norestart') -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "msiexec administrative extraction failed with exit code $($process.ExitCode)"
           }
