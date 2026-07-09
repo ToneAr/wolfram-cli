@@ -217,17 +217,23 @@ fn validates_colon_commands_as_complete_input() {
 }
 
 #[test]
-fn tab_key_opens_or_navigates_completion_without_submitting() {
-    let mut edit_mode = completion_edit_mode();
-    let event = raw_key(KeyCode::Tab, KeyModifiers::NONE);
+fn tab_key_opens_or_accepts_completion_without_submitting() {
+    for (code, modifiers) in [
+        (KeyCode::Tab, KeyModifiers::NONE),
+        (KeyCode::Char('i'), KeyModifiers::CONTROL),
+        (KeyCode::Char('\t'), KeyModifiers::NONE),
+    ] {
+        let mut edit_mode = completion_edit_mode();
+        let event = raw_key(code, modifiers);
 
-    assert_eq!(
-        edit_mode.parse_event(event),
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu("completion_menu".to_string()),
-            ReedlineEvent::MenuNext,
-        ])
-    );
+        assert_eq!(
+            edit_mode.parse_event(event),
+            ReedlineEvent::UntilFound(vec![
+                ReedlineEvent::Menu("completion_menu".to_string()),
+                ReedlineEvent::Enter,
+            ])
+        );
+    }
 }
 
 #[test]

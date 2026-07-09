@@ -187,13 +187,16 @@ impl Menu for StringAwareIdeMenu {
 pub(crate) fn completion_edit_mode() -> Emacs {
     let mut keybindings = default_emacs_keybindings();
 
+    keybindings.add_binding(KeyModifiers::NONE, KeyCode::Tab, accept_or_open_completion());
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('i'),
+        accept_or_open_completion(),
+    );
     keybindings.add_binding(
         KeyModifiers::NONE,
-        KeyCode::Tab,
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
-            ReedlineEvent::MenuNext,
-        ]),
+        KeyCode::Char('\t'),
+        accept_or_open_completion(),
     );
     keybindings.add_binding(
         KeyModifiers::CONTROL,
@@ -290,6 +293,13 @@ pub(crate) fn completion_edit_mode() -> Emacs {
     }
 
     Emacs::new(keybindings)
+}
+
+fn accept_or_open_completion() -> ReedlineEvent {
+    ReedlineEvent::UntilFound(vec![
+        ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
+        ReedlineEvent::Enter,
+    ])
 }
 
 fn insert_and_open_completion(ch: char) -> ReedlineEvent {
