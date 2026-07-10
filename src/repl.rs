@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -22,19 +23,24 @@ use crate::{
     frontend::{FrontEndClient, frontend_status},
     highlighter::WolframHighlighter,
     kernel::{
-        KernelClient, WolframVersions, kernel_input_prompt, kernel_may_be_slow_to_respond,
-        kernel_status, lock_kernel, spawn_kernel_warmup, wolfram_versions,
+        KernelClient, KernelConnection, SharedKernel, WolframVersions, kernel_input_prompt,
+        kernel_may_be_slow_to_respond, kernel_status, lock_kernel, spawn_kernel_warmup,
+        wolfram_versions,
     },
     native_wstp::KernelInputRequest,
     theme::{ThemeHandle, ThemeRegistry, selected_theme},
     wolfram_syntax::remember_user_symbols,
 };
 
-pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
+pub(crate) fn run_repl(
+    enable_frontend: bool,
+    use_color: bool,
+    connection: KernelConnection,
+) -> Result<()> {
     let history = history_path()?;
     let completion_epoch = Arc::new(AtomicU64::new(0));
     let user_symbols = Arc::new(Mutex::new(HashSet::new()));
-    let kernel = Arc::new(Mutex::new(KernelClient::new()?));
+    let kernel = Arc::new(Mutex::new(KernelClient::with_connection(connection)?));
     let frontend = if enable_frontend {
         Some(Arc::new(Mutex::new(FrontEndClient::new())))
     } else {
@@ -105,7 +111,8 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
                     }
                     continue;
                 }
-                if kernel_may_be_slow_to_respond(kernel_status(&kernel)?) {
+                let (mut kernel, may_be_slow) = lock_kernel_for_repl_input(&kernel)?;
+                if may_be_slow {
                     println!(
                         "\n{}: Kernel is starting up",
                         nu_ansi_term::Color::Yellow.paint("Wolfish::init")
@@ -114,11 +121,7 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
                 let mut kernel_input_handler = |request: &KernelInputRequest| {
                     read_kernel_input(&mut line_editor, request, theme.clone())
                 };
-                lock_kernel(&kernel)?.evaluate_repl_input(
-                    input,
-                    &theme,
-                    &mut kernel_input_handler,
-                )?;
+                kernel.evaluate_repl_input(input, &theme, &mut kernel_input_handler)?;
                 remember_user_symbols(input, &user_symbols);
                 completion_epoch.fetch_add(1, Ordering::Relaxed);
             }
@@ -128,6 +131,31 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+const KERNEL_INIT_WARNING_GRACE: Duration = Duration::from_millis(150);
+
+fn lock_kernel_for_repl_input(
+    kernel: &SharedKernel,
+) -> Result<(std::sync::MutexGuard<'_, KernelClient>, bool)> {
+    let started_waiting = Instant::now();
+    loop {
+        match kernel.try_lock() {
+            Ok(kernel) => {
+                let may_be_slow = kernel_may_be_slow_to_respond(kernel.status());
+                return Ok((kernel, may_be_slow));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if started_waiting.elapsed() >= KERNEL_INIT_WARNING_GRACE {
+                    return Ok((lock_kernel(kernel)?, true));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(anyhow::anyhow!("kernel session lock was poisoned"));
+            }
+        }
+    }
 }
 
 const WELCOME_BANNER: &str = r#"

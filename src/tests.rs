@@ -320,6 +320,22 @@ fn parses_repl_commands() {
         ReplCommand::Clear
     );
     assert_eq!(
+        parse_repl_command(":config", &registry).unwrap(),
+        ReplCommand::Config(ConfigCommand::Show)
+    );
+    assert_eq!(
+        parse_repl_command(":conf", &registry).unwrap(),
+        ReplCommand::Config(ConfigCommand::Show)
+    );
+    assert_eq!(
+        parse_repl_command(":config edit", &registry).unwrap(),
+        ReplCommand::Config(ConfigCommand::Edit)
+    );
+    assert_eq!(
+        parse_repl_command(":conf edit", &registry).unwrap(),
+        ReplCommand::Config(ConfigCommand::Edit)
+    );
+    assert_eq!(
         parse_repl_command(":help", &registry).unwrap(),
         ReplCommand::Help
     );
@@ -369,6 +385,8 @@ fn rejects_unknown_or_malformed_repl_commands() {
     assert!(parse_repl_command(":theme neon", &registry).is_err());
     assert!(parse_repl_command(":quit now", &registry).is_err());
     assert!(parse_repl_command(":history now", &registry).is_err());
+    assert!(parse_repl_command(":config show", &registry).is_err());
+    assert!(parse_repl_command(":config edit now", &registry).is_err());
 }
 
 #[test]
@@ -409,6 +427,20 @@ fn completes_repl_command_names_only_at_line_start() {
     assert_eq!(suggestions[0].span.end, 2);
 
     assert!(command_completion_suggestions("x:t", 3, test_styles(), &registry).is_none());
+}
+
+#[test]
+fn completes_config_command_arguments() {
+    let registry = test_theme_registry();
+    let suggestions =
+        command_completion_suggestions(":config e", 9, test_styles(), &registry).unwrap();
+    let values = suggestions
+        .iter()
+        .map(|suggestion| suggestion.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec!["edit"]);
+    assert_eq!(suggestions[0].span.start, 8);
+    assert_eq!(suggestions[0].span.end, 9);
 }
 
 #[test]

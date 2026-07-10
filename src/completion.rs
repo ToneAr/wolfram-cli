@@ -923,6 +923,9 @@ pub(crate) fn command_completion_suggestions(
         .is_some_and(char::is_whitespace);
 
     match command.as_str() {
+        "config" | "conf" if parts.next().is_none() || !has_trailing_space => Some(
+            config_arg_suggestions(argument_prefix, argument_start, pos, styles),
+        ),
         "theme" if parts.next().is_none() || !has_trailing_space => Some(theme_arg_suggestions(
             argument_prefix,
             argument_start,
@@ -942,6 +945,8 @@ pub(crate) fn command_name_suggestions(
 ) -> Vec<Suggestion> {
     [
         ("clear", "Clear the console"),
+        ("config", "Show or edit config file"),
+        ("conf", "Show or edit config file"),
         ("help", "Show REPL commands"),
         ("history", "Open the history browser"),
         ("theme", "Change syntax highlighting theme"),
@@ -951,6 +956,19 @@ pub(crate) fn command_name_suggestions(
     .filter(|(value, _)| command_candidate_matches(value, prefix))
     .map(|(value, description)| command_suggestion(value, description, start, end, styles))
     .collect()
+}
+
+pub(crate) fn config_arg_suggestions(
+    prefix: &str,
+    start: usize,
+    end: usize,
+    styles: ThemeStyles,
+) -> Vec<Suggestion> {
+    [("edit", "Open the config file in $EDITOR")]
+        .into_iter()
+        .filter(|(value, _)| command_candidate_matches(value, prefix))
+        .map(|(value, description)| command_suggestion(value, description, start, end, styles))
+        .collect()
 }
 
 pub(crate) fn theme_arg_suggestions(

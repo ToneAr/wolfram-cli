@@ -21,6 +21,20 @@ use crate::{
     theme::{Theme, ThemeHandle},
 };
 
+#[derive(Debug, Clone)]
+pub(crate) enum KernelConnection {
+    Launch {
+        link_options: Option<u32>,
+        link_mode: Option<String>,
+    },
+    Connect {
+        link_name: String,
+        link_protocol: native_wstp::LinkProtocol,
+        link_options: Option<u32>,
+        link_mode: Option<String>,
+    },
+}
+
 pub(crate) type SharedKernel = Arc<Mutex<KernelClient>>;
 
 #[derive(Debug, Clone)]
@@ -155,9 +169,27 @@ impl Drop for ActivityGuard {
 }
 
 impl KernelClient {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn with_connection(connection: KernelConnection) -> Result<Self> {
+        let wstp = match connection {
+            KernelConnection::Launch {
+                link_options,
+                link_mode,
+            } => native_wstp::WstpKernelClient::launch(link_options, link_mode.as_deref())?,
+            KernelConnection::Connect {
+                link_name,
+                link_protocol,
+                link_options,
+                link_mode,
+            } => native_wstp::WstpKernelClient::connect(
+                &link_name,
+                link_protocol,
+                link_options,
+                link_mode.as_deref(),
+            )?,
+        };
+
         Ok(Self {
-            wstp: native_wstp::WstpKernelClient::launch()?,
+            wstp,
             active: Arc::new(AtomicBool::new(false)),
             ready: false,
         })
@@ -375,7 +407,7 @@ pub(crate) fn kernel_may_be_slow_to_respond(status: KernelStatus) -> bool {
 /// Launches the WSTP kernel's first real evaluation in the background as
 /// soon as the REPL starts, instead of leaving it for the user's first
 /// submitted input. The kernel process and link are already created by this
-/// point (`KernelClient::new` did that cheaply); what remains is the slow
+/// point (`KernelClient::with_connection` did that cheaply); what remains is the slow
 /// first prompt/readiness handshake plus first-time evaluation setup. Doing
 /// that here overlaps it with the time the user spends reading the banner and
 /// typing their first command, instead of after they press Enter.

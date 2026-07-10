@@ -1,8 +1,15 @@
-use std::io::{self, Write};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::Path,
+    process::{Command, ExitStatus},
+};
 
 use anyhow::{Context, Result, bail};
 
-use crate::theme::{Theme, ThemeHandle, ThemeRegistry, print_theme_browser};
+use crate::theme::{
+    CONFIG_SCHEMA_URL, Theme, ThemeHandle, ThemeRegistry, config_file, print_theme_browser,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandAction {
@@ -14,10 +21,17 @@ pub(crate) enum CommandAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReplCommand {
     Clear,
+    Config(ConfigCommand),
     Help,
     History,
     Theme(ThemeCommand),
     Quit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ConfigCommand {
+    Show,
+    Edit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +59,19 @@ pub(crate) fn execute_repl_command(
         ReplCommand::Clear => {
             print!("\x1B[2J\x1B[H");
             let _ = io::stdout().flush();
+            CommandAction::Continue
+        }
+        ReplCommand::Config(ConfigCommand::Show) => {
+            match config_file() {
+                Some(path) => println!("Config: {}", path.display()),
+                None => println!("Could not determine the config file location."),
+            }
+            CommandAction::Continue
+        }
+        ReplCommand::Config(ConfigCommand::Edit) => {
+            if let Err(err) = edit_config_file() {
+                println!("Could not open config: {err:#}");
+            }
             CommandAction::Continue
         }
         ReplCommand::Help => {
@@ -84,6 +111,8 @@ pub(crate) fn execute_repl_command(
 fn print_command_help(theme: Theme, registry: &ThemeRegistry) {
     println!("Commands:");
     println!("  :clear                Clear the console.");
+    println!("  :config | :conf       Show config file location.");
+    println!("  :config edit          Open config file in $EDITOR.");
     println!("  :help | :h | :?       Show this help.");
     println!("  :history | :hist      Open the history browser.");
     println!("                        Press a key to search/navigate.");
@@ -109,6 +138,56 @@ fn set_theme(theme: &ThemeHandle, next: Theme) {
     }
 }
 
+fn edit_config_file() -> Result<()> {
+    let path = config_file().context("could not determine the user config directory")?;
+    ensure_config_file(&path)?;
+
+    let editor = env::var_os("EDITOR")
+        .filter(|value| !value.is_empty())
+        .context("$EDITOR is not set")?;
+    let status = run_editor(&editor, &path)?;
+    if !status.success() {
+        bail!("$EDITOR exited with {status}");
+    }
+    Ok(())
+}
+
+fn ensure_config_file(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+    if !path.exists() {
+        fs::write(path, default_config_content())
+            .with_context(|| format!("failed to create config file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn default_config_content() -> String {
+    format!("{{\n  \"$schema\": \"{CONFIG_SCHEMA_URL}\"\n}}\n")
+}
+
+#[cfg(unix)]
+fn run_editor(editor: &std::ffi::OsStr, path: &Path) -> Result<ExitStatus> {
+    Command::new("sh")
+        .arg("-c")
+        .arg("exec $EDITOR \"$1\"")
+        .arg("wolfish-config-edit")
+        .arg(path)
+        .env("EDITOR", editor)
+        .status()
+        .context("failed to launch $EDITOR")
+}
+
+#[cfg(windows)]
+fn run_editor(editor: &std::ffi::OsStr, path: &Path) -> Result<ExitStatus> {
+    Command::new(editor)
+        .arg(path)
+        .status()
+        .context("failed to launch $EDITOR")
+}
+
 pub(crate) fn parse_repl_command(input: &str, registry: &ThemeRegistry) -> Result<ReplCommand> {
     let command = input
         .trim()
@@ -127,6 +206,14 @@ pub(crate) fn parse_repl_command(input: &str, registry: &ThemeRegistry) -> Resul
             reject_extra_args(parts, ":clear")?;
             Ok(ReplCommand::Clear)
         }
+        "config" | "conf" => match parts.next() {
+            None => Ok(ReplCommand::Config(ConfigCommand::Show)),
+            Some("edit") => {
+                reject_extra_args(parts, ":config edit")?;
+                Ok(ReplCommand::Config(ConfigCommand::Edit))
+            }
+            Some(value) => bail!("unknown config command {value:?}; usage: :config [edit]"),
+        },
         "help" | "h" | "?" => {
             reject_extra_args(parts, ":help")?;
             Ok(ReplCommand::Help)
@@ -167,4 +254,44 @@ fn reject_extra_args(mut parts: std::str::SplitWhitespace<'_>, usage: &str) -> R
         bail!("usage: {usage}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn creates_default_config_with_remote_schema() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "wolfish-config-test-{}-{unique}",
+            std::process::id()
+        ));
+        let path = dir.join("config.json");
+
+        ensure_config_file(&path).expect("config file should be created");
+
+        let content = fs::read_to_string(&path).expect("config file should be readable");
+        let json: Value = serde_json::from_str(&content).expect("config should be valid JSON");
+        assert_eq!(json["$schema"], CONFIG_SCHEMA_URL);
+
+        fs::write(&path, "{\"theme\":\"dark\"}\n").expect("config should be writable");
+        ensure_config_file(&path).expect("existing config should be left in place");
+        assert_eq!(
+            fs::read_to_string(&path).expect("config file should be readable"),
+            "{\"theme\":\"dark\"}\n"
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
 }

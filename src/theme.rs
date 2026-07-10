@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::highlighter::print_highlighted;
 
+pub(crate) const CONFIG_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinTheme {
     Dark,
@@ -399,19 +402,90 @@ pub(crate) fn custom_theme_dir() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join("themes"))
 }
 
-fn config_file() -> Option<PathBuf> {
+pub(crate) fn config_file() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join("config.json"))
 }
 
-#[derive(Default, Deserialize, Serialize)]
-struct UserConfig {
-    theme: Option<String>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct UserConfig {
+    #[serde(
+        rename = "$schema",
+        skip_serializing_if = "Option::is_none",
+        default = "default_config_schema"
+    )]
+    pub(crate) schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) theme: Option<String>,
+    #[serde(skip_serializing_if = "CommandConfig::is_empty")]
+    pub(crate) command: CommandConfig,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            schema: default_config_schema(),
+            theme: None,
+            command: CommandConfig::default(),
+        }
+    }
+}
+
+fn default_config_schema() -> Option<String> {
+    Some(CONFIG_SCHEMA_URL.to_string())
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct CommandConfig {
+    #[serde(
+        rename = "no-frontend",
+        alias = "no_frontend",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) no_frontend: Option<bool>,
+    #[serde(
+        rename = "no-color",
+        alias = "no_color",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) no_color: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) linkconnect: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) linkname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) linkprotocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) linkoptions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) linkmode: Option<String>,
+}
+
+impl CommandConfig {
+    fn is_empty(&self) -> bool {
+        self.no_frontend.is_none()
+            && self.no_color.is_none()
+            && self.linkconnect.is_none()
+            && self.linkname.is_none()
+            && self.linkprotocol.is_none()
+            && self.linkoptions.is_none()
+            && self.linkmode.is_none()
+    }
+}
+
+pub(crate) fn load_user_config() -> UserConfig {
+    let Some(path) = config_file() else {
+        return UserConfig::default();
+    };
+    let Ok(content) = fs::read_to_string(path) else {
+        return UserConfig::default();
+    };
+    serde_json::from_str::<UserConfig>(&content).unwrap_or_default()
 }
 
 fn load_theme_preference() -> Option<String> {
-    let path = config_file()?;
-    let content = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<UserConfig>(&content).ok()?.theme
+    load_user_config().theme
 }
 
 fn save_theme_preference(theme: &Theme) -> Result<()> {
@@ -421,9 +495,8 @@ fn save_theme_preference(theme: &Theme) -> Result<()> {
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let config = UserConfig {
-        theme: Some(theme.name().to_string()),
-    };
+    let mut config = load_user_config();
+    config.theme = Some(theme.name().to_string());
     let content = serde_json::to_string_pretty(&config)?;
     fs::write(&path, format!("{content}\n"))
         .with_context(|| format!("failed to write theme preference to {}", path.display()))

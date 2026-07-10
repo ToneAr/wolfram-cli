@@ -12,7 +12,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use nu_ansi_term::Color;
 use wolfram_expr::{Expr, ExprKind, Symbol};
-use wstp::{Link, Protocol, UrgentMessage, sys};
+pub(crate) use wstp::Protocol as LinkProtocol;
+use wstp::{Link, UrgentMessage, sys};
 
 use crate::{
     interrupt,
@@ -158,29 +159,29 @@ fn short_message_symbol_name(symbol: &str) -> &str {
     symbol.rsplit('`').next().unwrap_or(symbol)
 }
 
+enum KernelProcess {
+    Launched(Child),
+    External,
+}
+
 pub(crate) struct WstpKernelClient {
-    process: Child,
+    process: KernelProcess,
     link: Option<Link>,
     input_prompt: Option<String>,
     initial_prompt_pending: bool,
 }
 
 impl WstpKernelClient {
-    pub(crate) fn launch() -> Result<Self> {
+    pub(crate) fn launch(link_options: Option<u32>, link_mode: Option<&str>) -> Result<Self> {
         let start = Instant::now();
         let path = kernel_path()?;
-        let mut link = Link::listen(Protocol::SharedMemory, "")
+        let mut link = Link::listen(LinkProtocol::SharedMemory, "")
             .map_err(|err| anyhow!("failed to create WSTP listener: {err:?}"))?;
         let link_name = link.link_name();
         let spawn_start = Instant::now();
         let mut command = Command::new(path);
+        configure_kernel_launch_command(&mut command, &link_name, link_options, link_mode);
         command
-            .arg("-wstp")
-            .arg("-linkprotocol")
-            .arg("SharedMemory")
-            .arg("-linkconnect")
-            .arg("-linkname")
-            .arg(&link_name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -198,7 +199,41 @@ impl WstpKernelClient {
         profile_duration("wstp.launch.total", start.elapsed(), "");
 
         Ok(Self {
-            process,
+            process: KernelProcess::Launched(process),
+            link: Some(link),
+            input_prompt: None,
+            initial_prompt_pending: true,
+        })
+    }
+
+    pub(crate) fn connect(
+        link_name: &str,
+        link_protocol: LinkProtocol,
+        link_options: Option<u32>,
+        link_mode: Option<&str>,
+    ) -> Result<Self> {
+        let start = Instant::now();
+        let connect_start = Instant::now();
+        let detail = format!("protocol={link_protocol:?} link_name={link_name}");
+        let mut link = connect_link(link_protocol.clone(), link_name, link_options, link_mode)
+            .map_err(|err| {
+                anyhow!(
+                    "failed to connect to WSTP link {link_name:?} using {link_protocol:?}: {err:?}"
+                )
+            })?;
+        profile_duration("wstp.connect.open", connect_start.elapsed(), &detail);
+
+        let activate_start = Instant::now();
+        link.activate().map_err(|err| {
+            anyhow!(
+                "failed to activate connected WSTP link {link_name:?} using {link_protocol:?}: {err:?}"
+            )
+        })?;
+        profile_duration("wstp.connect.activate", activate_start.elapsed(), &detail);
+        profile_duration("wstp.connect.total", start.elapsed(), &detail);
+
+        Ok(Self {
+            process: KernelProcess::External,
             link: Some(link),
             input_prompt: None,
             initial_prompt_pending: true,
@@ -318,7 +353,11 @@ impl WstpKernelClient {
         Ok(text)
     }
 
-    fn child_exit_code_after_link_error(process: &mut Child) -> Option<i32> {
+    fn child_exit_code_after_link_error(process: &mut KernelProcess) -> Option<i32> {
+        let KernelProcess::Launched(process) = process else {
+            return None;
+        };
+
         for _ in 0..20 {
             match process.try_wait() {
                 Ok(Some(status)) => return status.code(),
@@ -329,25 +368,92 @@ impl WstpKernelClient {
         None
     }
 
-    fn stop_child(&mut self) {
-        if let Some(link) = self.link.take() {
-            std::mem::forget(link);
-        }
+    fn close(&mut self) {
+        match &mut self.process {
+            KernelProcess::Launched(process) => {
+                if let Some(link) = self.link.take() {
+                    std::mem::forget(link);
+                }
 
-        for _ in 0..20 {
-            if self.process.try_wait().ok().flatten().is_some() {
-                return;
+                for _ in 0..20 {
+                    if process.try_wait().ok().flatten().is_some() {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                let _ = process.kill();
+                let _ = process.wait();
             }
-            thread::sleep(Duration::from_millis(50));
+            KernelProcess::External => {
+                if let Some(link) = self.link.take() {
+                    std::mem::forget(link);
+                }
+            }
         }
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+    }
+}
+
+fn connect_link(
+    link_protocol: LinkProtocol,
+    link_name: &str,
+    link_options: Option<u32>,
+    link_mode: Option<&str>,
+) -> std::result::Result<Link, wstp::Error> {
+    if link_options.is_none() && link_mode.is_none() {
+        return Link::connect(link_protocol, link_name);
+    }
+
+    let args = connect_link_args(link_protocol, link_name, link_options, link_mode);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    Link::open_with_args(&args)
+}
+
+fn connect_link_args(
+    link_protocol: LinkProtocol,
+    link_name: &str,
+    link_options: Option<u32>,
+    link_mode: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "-wstp".to_string(),
+        "-linkmode".to_string(),
+        link_mode.unwrap_or("connect").to_string(),
+        "-linkprotocol".to_string(),
+        link_protocol.to_string(),
+        "-linkname".to_string(),
+        link_name.to_string(),
+    ];
+    if let Some(link_options) = link_options {
+        args.push("-linkoptions".to_string());
+        args.push(link_options.to_string());
+    }
+    args
+}
+
+fn configure_kernel_launch_command(
+    command: &mut Command,
+    link_name: &str,
+    link_options: Option<u32>,
+    link_mode: Option<&str>,
+) {
+    command
+        .arg("-wstp")
+        .arg("-linkprotocol")
+        .arg("SharedMemory")
+        .arg("-linkconnect")
+        .arg("-linkname")
+        .arg(link_name);
+    if let Some(link_mode) = link_mode {
+        command.arg("-linkmode").arg(link_mode);
+    }
+    if let Some(link_options) = link_options {
+        command.arg("-linkoptions").arg(link_options.to_string());
     }
 }
 
 impl Drop for WstpKernelClient {
     fn drop(&mut self) {
-        self.stop_child();
+        self.close();
     }
 }
 
@@ -373,7 +479,7 @@ fn put_enter_text_packet(link: &mut Link, input: &str) -> Result<()> {
         .map_err(|err| anyhow!("failed to flush WSTP EnterTextPacket: {err:?}"))
 }
 
-fn read_initial_input_name_packet(link: &mut Link, process: &mut Child) -> Result<String> {
+fn read_initial_input_name_packet(link: &mut Link, process: &mut KernelProcess) -> Result<String> {
     loop {
         let packet_id = next_packet_id(link, process, "initial prompt")?;
         let packet = read_packet_payload(link, packet_id)?;
@@ -393,7 +499,7 @@ fn read_initial_input_name_packet(link: &mut Link, process: &mut Child) -> Resul
 
 fn read_packets_until_return(
     link: &mut Link,
-    process: &mut Child,
+    process: &mut KernelProcess,
     mut input_handler: Option<&mut KernelInputHandler<'_>>,
     read_next_input_name: bool,
     operation: &str,
@@ -450,7 +556,7 @@ fn read_packets_until_return(
     }
 }
 
-fn next_packet_id(link: &mut Link, process: &mut Child, operation: &str) -> Result<i32> {
+fn next_packet_id(link: &mut Link, process: &mut KernelProcess, operation: &str) -> Result<i32> {
     wait_for_packet_activity(link, process, operation)?;
     match link.raw_next_packet() {
         Ok(packet_id) => Ok(packet_id),
@@ -463,11 +569,16 @@ fn next_packet_id(link: &mut Link, process: &mut Child, operation: &str) -> Resu
     }
 }
 
-fn wait_for_packet_activity(link: &mut Link, process: &mut Child, operation: &str) -> Result<()> {
+fn wait_for_packet_activity(
+    link: &mut Link,
+    process: &mut KernelProcess,
+    operation: &str,
+) -> Result<()> {
     while !link.is_ready() {
-        if let Some(status) = process
-            .try_wait()
-            .context("failed to check WolframKernel process status")?
+        if let KernelProcess::Launched(process) = process
+            && let Some(status) = process
+                .try_wait()
+                .context("failed to check WolframKernel process status")?
         {
             return kernel_exit_result(status, operation);
         }
@@ -967,8 +1078,9 @@ fn wrap_to_string_query(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        KernelExit, KernelPacket, kernel_exit_result, next_input_prompt_after_evaluation,
-        render_message_text_with_color, render_output_name_with_color, wrap_to_string_query,
+        KernelExit, KernelPacket, configure_kernel_launch_command, connect_link_args,
+        kernel_exit_result, next_input_prompt_after_evaluation, render_message_text_with_color,
+        render_output_name_with_color, wrap_to_string_query,
     };
     use std::process::{Command, ExitStatus};
 
@@ -1007,6 +1119,78 @@ mod tests {
         assert!(wrapped.contains("StringQ[wolframCliQueryResult$]"));
         assert!(wrapped.contains("ToString[wolframCliQueryResult$, InputForm]"));
         assert!(wrapped.contains("StringJoin[\"a\", \"b\"]"));
+    }
+
+    #[test]
+    fn kernel_launch_command_adds_linkoptions_only_when_present() {
+        let mut command = Command::new("WolframKernel");
+        configure_kernel_launch_command(&mut command, "test-link", None, None);
+
+        let args = command_args(&command);
+        assert!(!args.contains(&"-linkoptions".to_string()));
+        assert!(!args.contains(&"-linkmode".to_string()));
+
+        let mut command = Command::new("WolframKernel");
+        configure_kernel_launch_command(&mut command, "test-link", Some(4), Some("Listen"));
+
+        assert_eq!(
+            command_args(&command),
+            [
+                "-wstp",
+                "-linkprotocol",
+                "SharedMemory",
+                "-linkconnect",
+                "-linkname",
+                "test-link",
+                "-linkmode",
+                "Listen",
+                "-linkoptions",
+                "4",
+            ]
+        );
+    }
+
+    #[test]
+    fn connected_link_args_add_linkmode_and_linkoptions_when_present() {
+        assert_eq!(
+            connect_link_args(super::LinkProtocol::SharedMemory, "test-link", None, None),
+            [
+                "-wstp",
+                "-linkmode",
+                "connect",
+                "-linkprotocol",
+                "SharedMemory",
+                "-linkname",
+                "test-link",
+            ]
+        );
+
+        assert_eq!(
+            connect_link_args(
+                super::LinkProtocol::TCPIP,
+                "1234@localhost",
+                Some(4),
+                Some("Connect"),
+            ),
+            [
+                "-wstp",
+                "-linkmode",
+                "Connect",
+                "-linkprotocol",
+                "TCPIP",
+                "-linkname",
+                "1234@localhost",
+                "-linkoptions",
+                "4",
+            ]
+        );
+    }
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
