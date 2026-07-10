@@ -2,7 +2,7 @@
 
 ![logo](docs/img/image.png)
 
-`wolfish` is a Rust CLI for running Wolfram Language from the terminal with a persistent WSTP-backed REPL, one-shot expression evaluation, script delegation through `wolframscript`, and dynamic completions.
+`wolfish` is a Rust CLI for running Wolfram Language from the terminal with a WSTP-backed REPL, one-shot expression evaluation, script delegation through `wolframscript`, and dynamic completions.
 
 It does not intent to replace wolframscript for script/file evaluation and is intended only as a more user friendly terminal REPL.
 
@@ -40,7 +40,6 @@ irm https://raw.githubusercontent.com/ToneAr/wolfish/main/installers/install.ps1
 For a detailed architecture and evaluation pipeline walkthrough, including WSTP packet flow diagrams, see [`docs/Architecture.md`](docs/Architecture.md).
 
 Start the interactive REPL. This uses the native WSTP backend and keeps a kernel session alive for REPL state:
-
 ```sh
 wolfish
 ```
@@ -50,27 +49,33 @@ Evaluate one expression and exit:
 wolfish -e 'Range[5]^2'
 ```
 
-Run a script file through `wolframscript`:
+Run a script file through `wolframscript` **[WIP]**:
 ```sh
 wolfish path/to/script.wls -- arg1 arg2
 ```
 
 However, all non-interactive script execution should be defer back to `wolframscript`.
 
-## Completion
-### TLDR
-1. Symbol completion
-2. Context completion
-3. Fuzzy matching
-4. File and directory autocomplete
-5. System command completion
+## TL;DR
+Quick list of all features:
+1. **Symbol completion**
+   ![symbols](docs/img/symbols.png)
+2. **Context completion**
+   ![contexts](docs/img/contexts.png)
+3. **Fuzzy matching** **[WIP]**
+   ![fuzzy](docs/img/fuzzy.png)
+4. **File and directory autocomplete**
+   ![filesystem](docs/img/filesystem.png)
+5. **System command completion**
+   ![commands](docs/img/commands.png)
 
+## Completion
 ### Details
 
 | Keybind        | Description |
 | ---            | --- |
 | `Enter`        | Evaluate input |
-| `Ctrl + C`     | Abort evaluation (Not currently working) |
+| `Ctrl + C`     | Abort evaluation **[WIP]** |
 | `Ctrl + D`     | Exit the program |
 | `Ctrl + R`     | Open history browser |
 | `Tab`          | Accept currently selected completion or open completion menu |
