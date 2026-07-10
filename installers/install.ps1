@@ -10,10 +10,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$BinaryName = 'wolfish'
+$BinaryName = 'wolfie'
 $ExecutableName = "$BinaryName.exe"
-$GitHubRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPO)) { 'ToneAr/wolfish' } else { $env:GITHUB_REPO }
-$ConfigSchemaUrl = 'https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json'
+$GitHubRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPO)) { 'ToneAr/wolfie' } else { $env:GITHUB_REPO }
+$ConfigSchemaUrl = 'https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json'
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = 'latest'
@@ -21,14 +21,14 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 
 function Show-Usage {
     @"
-Install wolfish on Windows.
+Install wolfie on Windows.
 
 Usage:
   .\install.ps1 [options]
 
 Options:
   -InstallDir DIR    Install the binary into DIR.
-                     Defaults to `%LOCALAPPDATA%\Programs\wolfish\bin,
+                     Defaults to `%LOCALAPPDATA%\Programs\wolfie\bin,
                      unless `%USERPROFILE%\.local\bin is writable and already on PATH.
   -Version TAG       Install a specific GitHub release tag, such as v0.2.0.
                      Defaults to the latest release.
@@ -39,7 +39,7 @@ Options:
 Environment:
   INSTALL_DIR         Same as -InstallDir.
   VERSION             Same as -Version.
-  GITHUB_REPO         GitHub repo to download from. Defaults to ToneAr/wolfish.
+  GITHUB_REPO         GitHub repo to download from. Defaults to ToneAr/wolfie.
   WOLFRAM_CLI_SHA256  Optional expected SHA-256 checksum for the release archive.
 "@
 }
@@ -165,7 +165,7 @@ function Test-WritableDirectory {
         return $false
     }
 
-    $probe = Join-Path $Directory ".wolfish-install-test-$PID"
+    $probe = Join-Path $Directory ".wolfie-install-test-$PID"
     try {
         New-Item -ItemType File -Path $probe -Force | Out-Null
         Remove-Item -LiteralPath $probe -Force
@@ -191,7 +191,7 @@ function Get-DefaultInstallDir {
         $localAppData = Join-Path $homeDirectory 'AppData\Local'
     }
 
-    return (Join-Path $localAppData 'Programs\wolfish\bin')
+    return (Join-Path $localAppData 'Programs\wolfie\bin')
 }
 
 function Get-DefaultConfigPath {
@@ -205,7 +205,7 @@ function Get-DefaultConfigPath {
         $appData = Join-Path $homeDirectory 'AppData\Roaming'
     }
 
-    return (Join-Path (Join-Path $appData 'wolfish') 'config.json')
+    return (Join-Path (Join-Path $appData 'wolfie') 'config.json')
 }
 
 function New-DefaultConfigFile {
@@ -227,7 +227,7 @@ function Get-ReleaseTargetName {
     }
 
     if (-not [Environment]::Is64BitOperatingSystem) {
-        Fail 'unsupported CPU architecture: wolfish release builds are only available for Windows x86_64'
+        Fail 'unsupported CPU architecture: wolfie release builds are only available for Windows x86_64'
     }
 
     return 'windows-x86_64'

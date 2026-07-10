@@ -205,9 +205,9 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  package="wolfish-${{ matrix.name }}"
+                  package="wolfie-${{ matrix.name }}"
                   mkdir "$package"
-                  cp "target/${{ matrix.target }}/release/wolfish" "$package/"
+                  cp "target/${{ matrix.target }}/release/wolfie" "$package/"
                   cp README.md "$package/"
                   tar -czf "$package.tar.gz" "$package"
 
@@ -215,9 +215,9 @@ jobs:
               if: matrix.archive == 'zip' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build'))
               shell: pwsh
               run: |
-                  $package = "wolfish-${{ matrix.name }}"
+                  $package = "wolfie-${{ matrix.name }}"
                   New-Item -ItemType Directory -Path $package
-                  Copy-Item "target/${{ matrix.target }}/release/wolfish.exe" $package
+                  Copy-Item "target/${{ matrix.target }}/release/wolfie.exe" $package
                   Copy-Item README.md $package
                   Compress-Archive -Path $package -DestinationPath "$package.zip"
 
@@ -225,8 +225,8 @@ jobs:
               if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build')
               uses: actions/upload-artifact@v4
               with:
-                  name: wolfish-${{ matrix.name }}
-                  path: wolfish-${{ matrix.name }}.${{ matrix.archive }}
+                  name: wolfie-${{ matrix.name }}
+                  path: wolfie-${{ matrix.name }}.${{ matrix.archive }}
                   if-no-files-found: error
 
     release:
@@ -239,7 +239,7 @@ jobs:
               uses: actions/download-artifact@v4
               with:
                   path: dist
-                  pattern: wolfish-*
+                  pattern: wolfie-*
                   merge-multiple: true
 
             - name: Publish GitHub release

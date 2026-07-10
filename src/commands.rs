@@ -173,7 +173,7 @@ fn run_editor(editor: &std::ffi::OsStr, path: &Path) -> Result<ExitStatus> {
     Command::new("sh")
         .arg("-c")
         .arg("exec $EDITOR \"$1\"")
-        .arg("wolfish-config-edit")
+        .arg("wolfie-config-edit")
         .arg(path)
         .env("EDITOR", editor)
         .status()
@@ -274,7 +274,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "wolfish-config-test-{}-{unique}",
+            "wolfie-config-test-{}-{unique}",
             std::process::id()
         ));
         let path = dir.join("config.json");

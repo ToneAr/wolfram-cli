@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "wolfish")]
+#[command(name = "wolfie")]
 #[command(about = "A friendlier CLI interface for the Wolfram Kernel")]
 struct Args {
     /// Disable Wolfram FrontEnd-backed completions and rendering support.
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn parses_linkconnect_linkname_as_connected_kernel() {
-        let args = Args::try_parse_from(["wolfish", "--linkconnect", "--linkname", "test-link"])
+        let args = Args::try_parse_from(["wolfie", "--linkconnect", "--linkname", "test-link"])
             .expect("linkconnect args should parse");
 
         let args = effective(args);
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn parses_custom_linkprotocol_for_connected_kernel() {
         let args = Args::try_parse_from([
-            "wolfish",
+            "wolfie",
             "--linkconnect",
             "--linkname",
             "test-link",
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn rejects_unknown_linkprotocol() {
         let err = Args::try_parse_from([
-            "wolfish",
+            "wolfie",
             "--linkconnect",
             "--linkname",
             "test-link",
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn rejects_linkconnect_without_linkname() {
-        let args = Args::try_parse_from(["wolfish", "--linkconnect"])
+        let args = Args::try_parse_from(["wolfie", "--linkconnect"])
             .expect("linkconnect without linkname should parse before validation");
 
         let args = effective(args);
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn parses_linkoptions_as_launched_kernel_options() {
-        let args = Args::try_parse_from(["wolfish", "--linkoptions", "4"])
+        let args = Args::try_parse_from(["wolfie", "--linkoptions", "4"])
             .expect("linkoptions should parse");
 
         let args = effective(args);
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn parses_linkmode_as_launched_kernel_option() {
-        let args = Args::try_parse_from(["wolfish", "--linkmode", "Listen"])
+        let args = Args::try_parse_from(["wolfie", "--linkmode", "Listen"])
             .expect("linkmode should parse");
 
         let args = effective(args);
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn parses_linkoptions_and_linkmode_with_linkconnect() {
         let args = Args::try_parse_from([
-            "wolfish",
+            "wolfie",
             "--linkconnect",
             "--linkname",
             "test-link",
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn applies_config_defaults_when_cli_options_are_absent() {
-        let args = Args::try_parse_from(["wolfish"]).expect("empty args should parse");
+        let args = Args::try_parse_from(["wolfie"]).expect("empty args should parse");
         let args = effective_with_config(
             args,
             UserConfig {
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn applies_config_linkoptions_to_launched_kernel() {
-        let args = Args::try_parse_from(["wolfish"]).expect("empty args should parse");
+        let args = Args::try_parse_from(["wolfie"]).expect("empty args should parse");
         let args = effective_with_config(
             args,
             UserConfig {
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn cli_linkprotocol_overrides_config_default() {
         let args = Args::try_parse_from([
-            "wolfish",
+            "wolfie",
             "--linkconnect",
             "--linkname",
             "cli-link",
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_config_linkprotocol() {
-        let args = Args::try_parse_from(["wolfish"]).expect("empty args should parse");
+        let args = Args::try_parse_from(["wolfie"]).expect("empty args should parse");
         let err = effective_args(
             args,
             UserConfig {

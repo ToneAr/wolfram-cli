@@ -115,7 +115,7 @@ pub(crate) fn run_repl(
                 if may_be_slow {
                     println!(
                         "\n{}: Kernel is starting up",
-                        nu_ansi_term::Color::Yellow.paint("Wolfish::init")
+                        nu_ansi_term::Color::Yellow.paint("Wolfie::init")
                     );
                 }
                 let mut kernel_input_handler = |request: &KernelInputRequest| {
@@ -159,18 +159,18 @@ fn lock_kernel_for_repl_input(
 }
 
 const WELCOME_BANNER: &str = r#"
-╭──────────────────────────────────────────────────────────────────╮
-│                              ,,      ,...,,           ,,         │
-│ `7MMF'     A     `7MF'     `7MM    .d' ""db         `7MM         │
-│   `MA     ,MA     ,V         MM    dM`                MM         │
-│    VM:   ,VVM:   ,V ,pW"Wq.  MM   mMMmm`7MM  ,pP"Ybd  MMpMMMb.   │
-│     MM.  M' MM.  M'6W'   `Wb MM    MM    MM  8I   `"  MM    MM   │
-│     `MM A'  `MM A' 8M     M8 MM    MM    MM  `YMMMa.  MM    MM   │
-│      :MM;    :MM;  YA.   ,A9 MM    MM    MM  L.   I8  MM    MM   │
-│       VF      VF    `Ybmd9'.JMML..JMML..JMML.M9mmmP'.JMML  JMML. │
-│                                                                  │
-│                Wolfram Friendly Interactive Shell                │
-╰──────────────────────────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────────╮
+│                              ,,      ,...,,           │
+│ `7MMF'     A     `7MF'     `7MM    .d' ""db           │
+│   `MA     ,MA     ,V         MM    dM`                │
+│    VM:   ,VVM:   ,V ,pW"Wq.  MM   mMMmm`7MM  .gP"Ya   │
+│     MM.  M' MM.  M'6W'   `Wb MM    MM    MM ,M'   Yb  │
+│     `MM A'  `MM A' 8M     M8 MM    MM    MM 8M""""""  │
+│      :MM;    :MM;  YA.   ,A9 MM    MM    MM YM.    ,  │
+│       VF      VF    `Ybmd9'.JMML..JMML..JMML.`Mbmmd'  │
+│                                                       │
+│          Wolfram Friendly Interactive Shell           │
+╰───────────────────────────────────────────────────────╯
 "#;
 
 const WELCOME_BANNER_WIDTH: u16 = 64;
@@ -246,7 +246,7 @@ fn print_styled_welcome_details(versions: &WolframVersions) {
     println!(
         "  {} {} {}",
         accent.paint("◆"),
-        title.paint("Wolfish       "),
+        title.paint("Wolfie        "),
         muted.paint(format!("{}", env!("CARGO_PKG_VERSION")))
     );
     println!(

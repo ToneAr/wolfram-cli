@@ -96,7 +96,7 @@ fn temp_completion_dir() -> PathBuf {
         .as_nanos();
     for attempt in 0..100 {
         let dir = std::env::temp_dir().join(format!(
-            "wolfish-completion-test-{}-{unique}-{attempt}",
+            "wolfie-completion-test-{}-{unique}-{attempt}",
             std::process::id()
         ));
         match fs::create_dir(&dir) {
@@ -304,6 +304,22 @@ fn shift_tab_inserts_literal_tab_character() {
     }
 }
 
+#[test]
+fn colon_key_opens_command_completion_menu() {
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+        let mut edit_mode = completion_edit_mode();
+        let event = raw_key(KeyCode::Char(':'), modifiers);
+
+        assert_eq!(
+            edit_mode.parse_event(event),
+            ReedlineEvent::Multiple(vec![
+                ReedlineEvent::Edit(vec![EditCommand::InsertChar(':')]),
+                ReedlineEvent::Menu("completion_menu".to_string()),
+            ])
+        );
+    }
+}
+
 fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> ReedlineRawEvent {
     ReedlineRawEvent::convert_from(Event::Key(KeyEvent::new(code, modifiers))).unwrap()
 }
@@ -420,6 +436,24 @@ fn theme_commands_can_change_theme_when_color_is_enabled() {
 #[test]
 fn completes_repl_command_names_only_at_line_start() {
     let registry = test_theme_registry();
+    let bare_suggestions =
+        command_completion_suggestions(":", 1, test_styles(), &registry).unwrap();
+    let bare_values = bare_suggestions
+        .iter()
+        .map(|suggestion| suggestion.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bare_values,
+        vec![
+            "clear", "config", "conf", "help", "history", "theme", "quit"
+        ]
+    );
+    assert!(
+        bare_suggestions
+            .iter()
+            .all(|suggestion| suggestion.span.start == 1 && suggestion.span.end == 1)
+    );
+
     let suggestions = command_completion_suggestions(":t", 2, test_styles(), &registry).unwrap();
     assert_eq!(suggestions.len(), 1);
     assert_eq!(suggestions[0].value, "theme");

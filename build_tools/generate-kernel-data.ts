@@ -103,7 +103,7 @@ const kernel =
 const output = join(scriptDir, "builtin_symbols.tsv");
 // Written alongside `output` (rather than under the system tmpdir) so the
 // final rename is same-filesystem and can't fail with EXDEV.
-const tmpDir = mkdtempSync(join(scriptDir, ".wolfish-builtin-symbols."));
+const tmpDir = mkdtempSync(join(scriptDir, ".wolfie-builtin-symbols."));
 const tmp = join(tmpDir, randomBytes(6).toString("hex"));
 
 function cleanup(): void {

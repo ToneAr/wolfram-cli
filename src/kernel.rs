@@ -197,7 +197,7 @@ impl KernelClient {
 
     pub(crate) fn evaluate_once(&mut self, input: &str, use_color: bool) -> Result<()> {
         let theme = (!use_color).then(|| ThemeHandle::builtin(Theme::plain()));
-        self.evaluate(input, theme.as_ref(), None, false)
+        self.evaluate(input, theme.as_ref(), None, false, false)
     }
 
     pub(crate) fn status(&self) -> KernelStatus {
@@ -222,7 +222,7 @@ impl KernelClient {
         theme: &ThemeHandle,
         input_handler: &mut dyn FnMut(&native_wstp::KernelInputRequest) -> Result<Option<String>>,
     ) -> Result<()> {
-        self.evaluate(input, Some(theme), Some(input_handler), true)
+        self.evaluate(input, Some(theme), Some(input_handler), true, true)
     }
 
     fn evaluate(
@@ -233,10 +233,16 @@ impl KernelClient {
             &mut dyn FnMut(&native_wstp::KernelInputRequest) -> Result<Option<String>>,
         >,
         separate_input_and_output: bool,
+        show_output_prompt: bool,
     ) -> Result<()> {
         let _activity = ActivityGuard::new(self.active.clone());
-        self.wstp
-            .evaluate_once(input, theme, input_handler, separate_input_and_output)?;
+        self.wstp.evaluate_once(
+            input,
+            theme,
+            input_handler,
+            separate_input_and_output,
+            show_output_prompt,
+        )?;
         self.ready = true;
         Ok(())
     }

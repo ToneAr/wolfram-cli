@@ -1,17 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
-BINARY_NAME="wolfish"
-GITHUB_REPO="${GITHUB_REPO:-ToneAr/wolfish}"
+BINARY_NAME="wolfie"
+GITHUB_REPO="${GITHUB_REPO:-ToneAr/wolfie}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-}"
-CONFIG_SCHEMA_URL="https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json"
+CONFIG_SCHEMA_URL="https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json"
 BUILD_FROM_SOURCE=0
 FORCE=0
 
 usage() {
     cat <<EOF
-Install wolfish on Linux or macOS.
+Install wolfie on Linux or macOS.
 
 Usage:
   ./install.sh [options]
@@ -29,7 +29,7 @@ Options:
 Environment:
   INSTALL_DIR          Same as --install-dir.
   VERSION              Same as --version.
-  GITHUB_REPO          GitHub repo to download from. Defaults to ToneAr/wolfish.
+  GITHUB_REPO          GitHub repo to download from. Defaults to ToneAr/wolfie.
   WOLFRAM_CLI_SHA256   Optional expected SHA-256 checksum for the release archive.
 EOF
 }
@@ -68,9 +68,9 @@ default_install_dir() {
 
 default_config_dir() {
     if [ -n "${XDG_CONFIG_HOME:-}" ]; then
-        printf '%s\n' "$XDG_CONFIG_HOME/wolfish"
+        printf '%s\n' "$XDG_CONFIG_HOME/wolfie"
     else
-        printf '%s\n' "$HOME/.config/wolfish"
+        printf '%s\n' "$HOME/.config/wolfie"
     fi
 }
 

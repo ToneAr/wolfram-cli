@@ -1313,8 +1313,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "wolfish"
-version = "0.6.4"
+name = "wolfie"
+version = "0.6.5"
 dependencies = [
  "anyhow",
  "clap",

@@ -1,12 +1,12 @@
-# Wolfish workflow
+# Wolfie workflow
 
-This document describes how `wolfish` starts, evaluates Wolfram Language input, talks to the Wolfram Kernel over WSTP, serves completions, and builds release artifacts.
+This document describes how `wolfie` starts, evaluates Wolfram Language input, talks to the Wolfram Kernel over WSTP, serves completions, and builds release artifacts.
 
 ## High-level architecture
 
-`wolfish` is a Rust terminal application with three user-facing execution modes:
+`wolfie` is a Rust terminal application with three user-facing execution modes:
 
-1. Interactive REPL, the default `wolfish` / `cargo run` path.
+1. Interactive REPL, the default `wolfie` / `cargo run` path.
 2. One-shot expression evaluation with `--eval` / `-e`.
 3. Script execution by delegating a file to `wolframscript -file`.
 
@@ -60,9 +60,9 @@ flowchart TD
 
 | Mode                | User command                | Runtime path                          | Kernel lifetime                 | Backend                               |
 | ------------------- | --------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------- |
-| REPL                | `wolfish`                    | `run_repl`                            | Persistent until quit           | WSTP                                  |
-| One-shot expression | `wolfish -e 'Range[5]^2'`    | `KernelClient::evaluate_once`         | One process for that evaluation | WSTP                                  |
-| Script file         | `wolfish script.wls -- arg1` | `wolframscript -file script.wls arg1` | Managed by `wolframscript`      | `wolframscript`, not this WSTP client |
+| REPL                | `wolfie`                    | `run_repl`                            | Persistent until quit           | WSTP                                  |
+| One-shot expression | `wolfie -e 'Range[5]^2'`    | `KernelClient::evaluate_once`         | One process for that evaluation | WSTP                                  |
+| Script file         | `wolfie script.wls -- arg1` | `wolframscript -file script.wls arg1` | Managed by `wolframscript`      | `wolframscript`, not this WSTP client |
 
 ## Kernel discovery
 
@@ -94,7 +94,7 @@ The native WSTP backend starts a Wolfram Kernel in WSTP mode and connects to it 
 
 ```mermaid
 sequenceDiagram
-    participant Rust as wolfish Rust process
+    participant Rust as wolfie Rust process
     participant Link as WSTP listener Link
     participant OS as OS process launcher
     participant Kernel as WolframKernel
@@ -409,7 +409,7 @@ flowchart TD
     Discover -->|missing| BuildError[Build fails at link setup]
     EnvDir --> Link[Link WSTP static library]
     LocalInstall --> Link
-    Link --> Binary[wolfish binary]
+    Link --> Binary[wolfie binary]
     Binary --> Runtime[Runtime discovers user's WolframKernel]
     Runtime --> Eval[Evaluation over WSTP]
 ```

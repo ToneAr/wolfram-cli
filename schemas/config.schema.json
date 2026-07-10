@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json",
-  "title": "Wolfish config",
-  "description": "User configuration for wolfish config.json.",
+  "$id": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
+  "title": "Wolfie config",
+  "description": "User configuration for wolfie config.json.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -85,7 +85,7 @@
   },
   "examples": [
     {
-      "$schema": "https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json",
+      "$schema": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
       "theme": "dark",
       "command": {
         "no-frontend": false,

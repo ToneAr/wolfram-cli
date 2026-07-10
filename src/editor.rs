@@ -431,7 +431,7 @@ pub(crate) fn completion_edit_mode() -> Emacs {
         );
     }
 
-    for ch in ['$', '`'] {
+    for ch in ['$', '`', ':'] {
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Char(ch),
@@ -446,7 +446,7 @@ pub(crate) fn completion_edit_mode() -> Emacs {
 
     for ch in [
         ' ', '[', ']', '{', '}', '(', ')', ',', ';', '+', '-', '*', '/', '^', '=', '<', '>', '!',
-        '&', '|', '@', '#', '%', '\'', '"', ':', '.', '?', '_', '~', '\\',
+        '&', '|', '@', '#', '%', '\'', '"', '.', '?', '_', '~', '\\',
     ] {
         keybindings.add_binding(
             KeyModifiers::NONE,
@@ -651,7 +651,7 @@ pub(crate) fn history_path() -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .context("could not determine a history directory")?;
-    let dir = base.join("wolfish");
+    let dir = base.join("wolfie");
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("history"))
 }

@@ -246,12 +246,20 @@ impl WstpKernelClient {
         theme: Option<&ThemeHandle>,
         input_handler: Option<&mut KernelInputHandler<'_>>,
         separate_input_and_output: bool,
+        show_output_prompt: bool,
     ) -> Result<()> {
         let previous_input_prompt = self.input_prompt.clone();
         let packets = self.evaluate_input_packets(input, input_handler)?;
         let input_prompt =
             next_input_prompt_after_evaluation(previous_input_prompt.as_deref(), &packets);
-        render_packets(&packets, theme, separate_input_and_output)?;
+        render_packets(
+            &packets,
+            theme,
+            PacketRenderOptions {
+                separate_input_and_output,
+                show_output_prompt,
+            },
+        )?;
         if let Some(input_prompt) = input_prompt {
             self.input_prompt = Some(input_prompt);
         }
@@ -921,15 +929,20 @@ fn debug_text(text: &str) -> String {
     format!("{text:?}")
 }
 
+struct PacketRenderOptions {
+    separate_input_and_output: bool,
+    show_output_prompt: bool,
+}
+
 fn render_packets(
     packets: &[KernelPacket],
     theme: Option<&ThemeHandle>,
-    separate_input_and_output: bool,
+    options: PacketRenderOptions,
 ) -> Result<()> {
     let mut output_name: Option<&str> = None;
     let mut pending_message_identifier: Option<(&str, &str)> = None;
     let mut text_without_trailing_newline = false;
-    let mut output_separator_pending = separate_input_and_output;
+    let mut output_separator_pending = options.separate_input_and_output;
 
     for (index, packet) in packets.iter().enumerate() {
         match packet {
@@ -963,8 +976,8 @@ fn render_packets(
                     text_without_trailing_newline = false;
                 }
                 let text = expr_string_value(expr).unwrap_or_else(|| expr.to_string());
-                render_return_text(&text, output_name.take(), theme)?;
-                if separate_input_and_output && !text.is_empty() {
+                render_return_text(&text, output_name.take(), theme, options.show_output_prompt)?;
+                if options.separate_input_and_output && !text.is_empty() {
                     print_kernel_text("\n")?;
                 }
             }
@@ -977,8 +990,8 @@ fn render_packets(
                     print_kernel_text("\n")?;
                     text_without_trailing_newline = false;
                 }
-                render_return_text(text, output_name.take(), theme)?;
-                if separate_input_and_output && !text.is_empty() {
+                render_return_text(text, output_name.take(), theme, options.show_output_prompt)?;
+                if options.separate_input_and_output && !text.is_empty() {
                     print_kernel_text("\n")?;
                 }
             }
@@ -1033,20 +1046,33 @@ fn render_return_text(
     text: &str,
     output_name: Option<&str>,
     theme: Option<&ThemeHandle>,
+    show_output_prompt: bool,
 ) -> Result<()> {
+    if let Some(text) = rendered_return_text(text, output_name, theme, show_output_prompt) {
+        println!("{text}");
+    }
+    Ok(())
+}
+
+fn rendered_return_text(
+    text: &str,
+    output_name: Option<&str>,
+    theme: Option<&ThemeHandle>,
+    show_output_prompt: bool,
+) -> Option<String> {
     if text.is_empty() {
-        return Ok(());
+        return None;
     }
 
-    if let Some(output_name) = output_name {
-        print_kernel_text(&render_output_name_with_color(
+    let mut rendered = String::new();
+    if show_output_prompt && let Some(output_name) = output_name {
+        rendered.push_str(&render_output_name_with_color(
             output_name,
             output_name_color_enabled(theme),
-        ))?;
+        ));
     }
-
-    println!("{text}");
-    Ok(())
+    rendered.push_str(text);
+    Some(rendered)
 }
 
 fn render_output_name_with_color(output_name: &str, use_color: bool) -> String {
@@ -1080,7 +1106,7 @@ mod tests {
     use super::{
         KernelExit, KernelPacket, configure_kernel_launch_command, connect_link_args,
         kernel_exit_result, next_input_prompt_after_evaluation, render_message_text_with_color,
-        render_output_name_with_color, wrap_to_string_query,
+        render_output_name_with_color, rendered_return_text, wrap_to_string_query,
     };
     use std::process::{Command, ExitStatus};
 
@@ -1250,6 +1276,25 @@ mod tests {
     #[test]
     fn output_name_stays_plain_when_color_is_disabled() {
         assert_eq!(render_output_name_with_color("Out[7]= ", false), "Out[7]= ");
+    }
+
+    #[test]
+    fn return_text_includes_output_name_for_repl() {
+        assert_eq!(
+            rendered_return_text("2", Some("Out[1]= "), None, true),
+            Some(format!(
+                "{}2",
+                render_output_name_with_color("Out[1]= ", true)
+            ))
+        );
+    }
+
+    #[test]
+    fn return_text_suppresses_output_name_for_eval() {
+        assert_eq!(
+            rendered_return_text("2", Some("Out[1]= "), None, false),
+            Some("2".to_string())
+        );
     }
 
     #[test]

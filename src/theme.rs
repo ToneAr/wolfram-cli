@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::highlighter::print_highlighted;
 
 pub(crate) const CONFIG_SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json";
+    "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinTheme {
@@ -328,7 +328,7 @@ impl ThemeRegistry {
             let normalized = theme.name().to_ascii_lowercase();
             if !names.insert(normalized) {
                 eprintln!(
-                    "Wolfish::theme: ignoring custom theme {:?}; a theme with that name already exists",
+                    "Wolfie::theme: ignoring custom theme {:?}; a theme with that name already exists",
                     theme.name()
                 );
                 continue;
@@ -395,7 +395,7 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         })
-        .map(|dir| dir.join("wolfish"))
+        .map(|dir| dir.join("wolfie"))
 }
 
 pub(crate) fn custom_theme_dir() -> Option<PathBuf> {
@@ -698,7 +698,7 @@ fn load_custom_themes() -> Vec<Theme> {
             Ok(theme) => Some(theme),
             Err(err) => {
                 eprintln!(
-                    "Wolfish::theme: failed to load custom theme {}: {err:#}",
+                    "Wolfie::theme: failed to load custom theme {}: {err:#}",
                     path.display()
                 );
                 None
@@ -1003,7 +1003,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = env::temp_dir().join(format!(
-            "wolfish-theme-test-{}-{unique}",
+            "wolfie-theme-test-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir_all(&dir).unwrap();

@@ -1,10 +1,10 @@
 #!/usr/bin/env wolframscript
-$binaryName = "wolfish";
+$binaryName = "wolfie";
 
-$defaultGitHubRepo = "ToneAr/wolfish";
+$defaultGitHubRepo = "ToneAr/wolfie";
 
 $configSchemaUrl =
-	"https://raw.githubusercontent.com/ToneAr/wolfish/main/schemas/config.schema.json";
+	"https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json";
 
 $cli = ResourceFunction["CommandLineTools"];
 
@@ -22,7 +22,7 @@ commandLineSpec[] :=
 helpBase[] :=
 	StringRiffle[
 		{
-			"Install wolfish on Linux, macOS, or Windows.",
+			"Install wolfie on Linux, macOS, or Windows.",
 			"",
 			"Usage:",
 			"  wolframscript -script install.wls [options]",
@@ -35,7 +35,7 @@ helpBase[] :=
 			"  INSTALL_DIR          Same as --install-dir.",
 			"  VERSION              Same as --version.",
 			"  GITHUB_REPO          GitHub repo to download from.",
-			"                       Defaults to ToneAr/wolfish.",
+			"                       Defaults to ToneAr/wolfie.",
 			"  WOLFRAM_CLI_SHA256   Optional expected SHA-256 checksum."
 		},
 		"\n"
@@ -124,7 +124,7 @@ writableDirectoryQ[directory_String] :=
 			FileNameJoin[
 				{
 					directory,
-					StringJoin[ ".wolfish-install-test-", ToString[$ProcessID]]
+					StringJoin[ ".wolfie-install-test-", ToString[$ProcessID]]
 				}
 			];
 		stream = Check[OpenWrite[probe], $Failed];
@@ -172,13 +172,7 @@ defaultConfigFile[] :=
 	];
 
 defaultConfigContent[] :=
-	StringJoin[
-		"{\n",
-		"  \"$schema\": \"",
-		$configSchemaUrl,
-		"\"\n",
-		"}\n"
-	];
+	StringJoin[ "{\n  \"$schema\": \"", $configSchemaUrl, "\"\n}\n"];
 
 createDefaultConfig[] :=
 	Module[{path, directory, result},
