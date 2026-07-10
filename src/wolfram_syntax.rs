@@ -54,10 +54,9 @@ pub(crate) fn wolfram_input_is_incomplete(line: &str) -> bool {
                     return false;
                 }
             }
-            ')'
-                if !matches!(stack.pop(), Some('(')) => {
-                    return false;
-                }
+            ')' if !matches!(stack.pop(), Some('(')) => {
+                return false;
+            }
             _ => {}
         }
     }

@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    io::{self, IsTerminal},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -21,11 +22,11 @@ use crate::{
     frontend::{FrontEndClient, frontend_status},
     highlighter::WolframHighlighter,
     kernel::{
-        KernelClient, kernel_input_prompt, kernel_may_be_slow_to_respond, kernel_status,
-        lock_kernel, spawn_kernel_warmup,
+        KernelClient, WolframVersions, kernel_input_prompt, kernel_may_be_slow_to_respond,
+        kernel_status, lock_kernel, spawn_kernel_warmup, wolfram_versions,
     },
     native_wstp::KernelInputRequest,
-    theme::{Theme, ThemeHandle},
+    theme::{ThemeHandle, ThemeRegistry, selected_theme},
     wolfram_syntax::remember_user_symbols,
 };
 
@@ -39,10 +40,12 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
     } else {
         None
     };
+    let versions = wolfram_versions();
     spawn_kernel_warmup(kernel.clone());
-    print_welcome(use_color);
-    let initial_theme = if use_color { Theme::Dark } else { Theme::Plain };
-    let theme = ThemeHandle::new(initial_theme);
+    print_welcome(use_color, &versions);
+    let theme_registry = ThemeRegistry::load();
+    let initial_theme = selected_theme(use_color, &theme_registry);
+    let theme = ThemeHandle::new(initial_theme, theme_registry);
     let completion_source = CompletionSource::new(
         kernel.clone(),
         completion_epoch.clone(),
@@ -53,6 +56,7 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
     let mut line_editor = Reedline::create()
         .use_kitty_keyboard_enhancement(true)
         .with_ansi_colors(use_color)
+        .with_visual_selection_style(theme.current().styles().visual_selection)
         .with_history(Box::new(FileBackedHistory::with_file(2000, history)?))
         .with_highlighter(Box::new(WolframHighlighter::new(
             symbol_set,
@@ -63,8 +67,12 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
             completion_source,
             theme.clone(),
         )))
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu())))
-        .with_menu(ReedlineMenu::HistoryMenu(Box::new(history_menu())))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(
+            theme.clone(),
+        ))))
+        .with_menu(ReedlineMenu::HistoryMenu(Box::new(history_menu(
+            theme.clone(),
+        ))))
         .with_validator(Box::new(WolframValidator))
         .with_edit_mode(history_primed_edit_mode(
             completion_edit_mode(),
@@ -74,7 +82,8 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
         let prompt = WolframPrompt {
             input_prompt: kernel_input_prompt(&kernel)?.unwrap_or_else(|| "In[1]:= ".to_string()),
             kernel_status: kernel_status(&kernel)?,
-            frontend_status: frontend_status(frontend.as_ref())?,
+            _frontend_status: frontend_status(frontend.as_ref())?,
+            theme: theme.clone(),
         };
         match line_editor.read_line(&prompt)? {
             Signal::Success(input) => {
@@ -98,11 +107,13 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
                 }
                 if kernel_may_be_slow_to_respond(kernel_status(&kernel)?) {
                     println!(
-                        "(kernel is still starting up; the first response can take a few seconds)"
+                        "\n{}: Kernel is starting up",
+                        nu_ansi_term::Color::Yellow.paint("Wolfish::init")
                     );
                 }
-                let mut kernel_input_handler =
-                    |request: &KernelInputRequest| read_kernel_input(&mut line_editor, request);
+                let mut kernel_input_handler = |request: &KernelInputRequest| {
+                    read_kernel_input(&mut line_editor, request, theme.clone())
+                };
                 lock_kernel(&kernel)?.evaluate_repl_input(
                     input,
                     &theme,
@@ -119,34 +130,160 @@ pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_welcome(use_color: bool) {
+const WELCOME_BANNER: &str = r#"
+╭──────────────────────────────────────────────────────────────────╮
+│                              ,,      ,...,,           ,,         │
+│ `7MMF'     A     `7MF'     `7MM    .d' ""db         `7MM         │
+│   `MA     ,MA     ,V         MM    dM`                MM         │
+│    VM:   ,VVM:   ,V ,pW"Wq.  MM   mMMmm`7MM  ,pP"Ybd  MMpMMMb.   │
+│     MM.  M' MM.  M'6W'   `Wb MM    MM    MM  8I   `"  MM    MM   │
+│     `MM A'  `MM A' 8M     M8 MM    MM    MM  `YMMMa.  MM    MM   │
+│      :MM;    :MM;  YA.   ,A9 MM    MM    MM  L.   I8  MM    MM   │
+│       VF      VF    `Ybmd9'.JMML..JMML..JMML.M9mmmP'.JMML  JMML. │
+│                                                                  │
+│                Wolfram Friendly Interactive Shell                │
+╰──────────────────────────────────────────────────────────────────╯
+"#;
+
+const WELCOME_BANNER_WIDTH: u16 = 64;
+
+const WELCOME_GRADIENT: [nu_ansi_term::Rgb; 6] = [
+    nu_ansi_term::Rgb::new(255, 82, 119),
+    nu_ansi_term::Rgb::new(230, 90, 100),
+    nu_ansi_term::Rgb::new(180, 90, 80),
+    nu_ansi_term::Rgb::new(140, 90, 80),
+    nu_ansi_term::Rgb::new(170, 130, 100),
+    nu_ansi_term::Rgb::new(130, 120, 110),
+];
+
+fn print_welcome(use_color: bool, versions: &WolframVersions) {
     if use_color {
-        println!(
-            "{}{}",
-            nu_ansi_term::Style::new()
-                .bold()
-                .underline()
-                .fg(nu_ansi_term::Color::Red)
-                .paint("Wolfram"),
-            nu_ansi_term::Style::new()
-                .bold()
-                .underline()
-                .fg(nu_ansi_term::Color::DarkGray)
-                .paint("Shell")
-        );
+        if terminal_can_fit_welcome_banner() {
+            print_gradient_welcome(versions);
+        } else {
+            println!("\n    Wolfram Friendly Interactive Shell\n");
+            print_styled_welcome_details(versions);
+        }
     } else {
-        println!("WolframShell");
+        print_plain_welcome(versions);
     }
+}
+
+fn terminal_can_fit_welcome_banner() -> bool {
+    if !io::stdout().is_terminal() {
+        return true;
+    }
+
+    crossterm::terminal::size()
+        .map(|(columns, _)| columns >= WELCOME_BANNER_WIDTH)
+        .unwrap_or(true)
+}
+
+fn print_plain_welcome(versions: &WolframVersions) {
+    println!("WolframShell");
     println!("TUI Version: {}", env!("CARGO_PKG_VERSION"));
+    println!("Wolfram Kernel: {}", versions.kernel);
+    println!("WolframScript: {}", versions.wolframscript);
     println!("Type :help for commands, :quit or Ctrl-D to quit.\n");
+}
+
+fn print_gradient_welcome(versions: &WolframVersions) {
+    // let animate = io::stdout().is_terminal();
+    let lines: Vec<_> = WELCOME_BANNER.trim_matches('\n').lines().collect();
+
+    println!();
+    for (line_index, line) in lines.iter().enumerate() {
+        print_gradient_line(line, line_index, lines.len());
+        println!();
+
+        // if animate {
+        //     let _ = io::stdout().flush();
+        //     thread::sleep(Duration::from_millis(18));
+        // }
+    }
+
+    print_styled_welcome_details(versions);
+}
+
+fn print_styled_welcome_details(versions: &WolframVersions) {
+    let accent = nu_ansi_term::Style::new()
+        .bold()
+        .fg(nu_ansi_term::Color::Rgb(250, 70, 35));
+    let title = nu_ansi_term::Style::new()
+        .bold()
+        .fg(nu_ansi_term::Color::Rgb(255, 255, 255));
+    let muted = nu_ansi_term::Style::new().fg(nu_ansi_term::Color::DarkGray);
+
+    println!();
+    println!(
+        "  {} {} {}",
+        accent.paint("◆"),
+        title.paint("Wolfish       "),
+        muted.paint(format!("{}", env!("CARGO_PKG_VERSION")))
+    );
+    println!(
+        "  {} {} {}",
+        accent.paint("◆"),
+        title.paint("WolframKernel "),
+        muted.paint(&versions.kernel)
+    );
+    println!(
+        "  {} {} {}",
+        accent.paint("◆"),
+        title.paint("WolframScript "),
+        muted.paint(&versions.wolframscript)
+    );
+    println!();
+    println!(
+        "  {}",
+        muted.paint("Type :help for commands, :quit or Ctrl-D to quit.")
+    );
+    println!();
+}
+
+fn print_gradient_line(line: &str, line_index: usize, line_count: usize) {
+    let line_width = line.chars().count().max(1);
+    let gradient_width = line_width + line_count * 3;
+
+    for (char_index, ch) in line.chars().enumerate() {
+        if ch.is_whitespace() {
+            print!("{ch}");
+            continue;
+        }
+
+        let color = gradient_color(char_index + line_index * 10, gradient_width);
+        print!(
+            "{}",
+            nu_ansi_term::Style::new()
+                .bold()
+                .fg(color)
+                .paint(ch.to_string())
+        );
+    }
+}
+
+fn gradient_color(position: usize, width: usize) -> nu_ansi_term::Color {
+    let span = width.saturating_sub(1).max(1) as f32;
+    let scaled = position as f32 / span * (WELCOME_GRADIENT.len() - 1) as f32;
+    let lower_index = (scaled.floor() as usize).min(WELCOME_GRADIENT.len() - 2);
+    let upper_index = lower_index + 1;
+    let mix = scaled - lower_index as f32;
+
+    let rgb =
+        nu_ansi_term::Gradient::new(WELCOME_GRADIENT[lower_index], WELCOME_GRADIENT[upper_index])
+            .at(mix);
+
+    nu_ansi_term::Color::Rgb(rgb.r, rgb.g, rgb.b)
 }
 
 fn read_kernel_input(
     line_editor: &mut Reedline,
     request: &KernelInputRequest,
+    theme: ThemeHandle,
 ) -> Result<Option<String>> {
     let prompt = KernelInputPrompt {
         text: request.prompt.clone(),
+        theme,
     };
 
     match line_editor.read_line(&prompt)? {
@@ -158,11 +295,18 @@ fn read_kernel_input(
 
 struct KernelInputPrompt {
     text: String,
+    theme: ThemeHandle,
 }
 
 impl Prompt for KernelInputPrompt {
     fn render_prompt_left(&self) -> std::borrow::Cow<'_, str> {
-        self.text.as_str().into()
+        self.theme
+            .current()
+            .styles()
+            .prompt_left
+            .paint(&self.text)
+            .to_string()
+            .into()
     }
 
     fn render_prompt_right(&self) -> std::borrow::Cow<'_, str> {
@@ -174,7 +318,13 @@ impl Prompt for KernelInputPrompt {
     }
 
     fn render_prompt_multiline_indicator(&self) -> std::borrow::Cow<'_, str> {
-        " ".repeat(self.text.chars().count()).into()
+        self.theme
+            .current()
+            .styles()
+            .prompt_multiline_text
+            .paint(" ".repeat(self.text.chars().count()))
+            .to_string()
+            .into()
     }
 
     fn render_prompt_history_search_indicator(

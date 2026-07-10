@@ -9,7 +9,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use crossterm::event::{Event, KeyEvent};
+use crossterm::{
+    event::{Event, KeyEvent},
+    style::Color as CrosstermColor,
+};
 use reedline::{
     Completer, EditCommand, EditMode, Editor, Emacs, IdeMenu, KeyCode, KeyModifiers, ListMenu,
     Menu, MenuBuilder, MenuEvent, Painter, Prompt, PromptEditMode, PromptHistorySearch,
@@ -20,6 +23,7 @@ use reedline::{
 use crate::{
     frontend::FrontEndStatus,
     kernel::KernelStatus,
+    theme::{ThemeHandle, ThemeStyles},
     wolfram_syntax::{completion_is_disabled_at_cursor, wolfram_input_is_incomplete},
 };
 
@@ -29,20 +33,30 @@ pub(crate) const HISTORY_MENU: &str = "history_menu";
 pub(crate) struct WolframPrompt {
     pub(crate) input_prompt: String,
     pub(crate) kernel_status: KernelStatus,
-    pub(crate) frontend_status: FrontEndStatus,
+    pub(crate) _frontend_status: FrontEndStatus,
+    pub(crate) theme: ThemeHandle,
 }
 
 impl Prompt for WolframPrompt {
     fn render_prompt_left(&self) -> std::borrow::Cow<'_, str> {
-        self.input_prompt.as_str().into()
+        let styles = self.theme.current().styles();
+        styles
+            .prompt_left
+            .paint(&self.input_prompt)
+            .to_string()
+            .into()
     }
 
     fn render_prompt_right(&self) -> std::borrow::Cow<'_, str> {
-        format!(
-            "Kernel: {} | FE: {}",
-            self.kernel_status, self.frontend_status
-        )
-        .into()
+        let styles = self.theme.current().styles();
+        styles
+            .prompt_right_text
+            .paint(format!(
+                "Kernel: {}",       // | FE: {}",
+                self.kernel_status  //, self.frontend_status
+            ))
+            .to_string()
+            .into()
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> std::borrow::Cow<'_, str> {
@@ -51,7 +65,14 @@ impl Prompt for WolframPrompt {
 
     fn render_prompt_multiline_indicator(&self) -> std::borrow::Cow<'_, str> {
         let width = self.input_prompt.chars().count();
-        format!("{}> ", " ".repeat(width.saturating_sub(2))).into()
+        let indicator = format!("{}> ", " ".repeat(width.saturating_sub(2)));
+        self.theme
+            .current()
+            .styles()
+            .prompt_multiline_text
+            .paint(indicator)
+            .to_string()
+            .into()
     }
 
     fn render_prompt_history_search_indicator(
@@ -60,32 +81,170 @@ impl Prompt for WolframPrompt {
     ) -> std::borrow::Cow<'_, str> {
         "".into()
     }
+
+    fn get_prompt_color(&self) -> CrosstermColor {
+        self.theme.current().styles().prompt
+    }
+
+    fn get_prompt_multiline_color(&self) -> nu_ansi_term::Color {
+        self.theme.current().styles().prompt_multiline
+    }
+
+    fn get_indicator_color(&self) -> CrosstermColor {
+        self.theme.current().styles().prompt_indicator
+    }
+
+    fn get_prompt_right_color(&self) -> CrosstermColor {
+        self.theme.current().styles().prompt_right
+    }
 }
 
-pub(crate) fn completion_menu() -> StringAwareIdeMenu {
+pub(crate) fn completion_menu(theme: ThemeHandle) -> StringAwareIdeMenu {
     StringAwareIdeMenu::new(
         IdeMenu::default()
             .with_name(COMPLETION_MENU)
             .with_only_buffer_difference(false)
             .with_max_completion_height(6)
             .with_max_description_height(6),
+        theme,
     )
 }
 
-pub(crate) fn history_menu() -> ListMenu {
-    ListMenu::default()
-        .with_name(HISTORY_MENU)
-        .with_page_size(10)
-        .with_max_entry_lines(1)
+pub(crate) fn history_menu(theme: ThemeHandle) -> ThemedMenu<ListMenu> {
+    ThemedMenu::new(
+        ListMenu::default()
+            .with_name(HISTORY_MENU)
+            .with_page_size(10)
+            .with_max_entry_lines(1),
+        theme,
+    )
+}
+
+fn apply_menu_styles<M>(menu: M, styles: ThemeStyles) -> M
+where
+    M: MenuBuilder,
+{
+    menu.with_text_style(styles.menu_text)
+        .with_selected_text_style(styles.menu_selected_text)
+        .with_description_text_style(styles.menu_description)
+        .with_match_text_style(styles.menu_match)
+        .with_selected_match_text_style(styles.menu_selected_match)
+        .with_marker("▌ ")
+}
+
+pub(crate) struct ThemedMenu<M> {
+    inner: M,
+    theme: ThemeHandle,
+}
+
+impl<M> ThemedMenu<M>
+where
+    M: MenuBuilder + Default,
+{
+    fn new(inner: M, theme: ThemeHandle) -> Self {
+        let mut menu = Self { inner, theme };
+        menu.apply_current_styles();
+        menu
+    }
+
+    fn apply_current_styles(&mut self) {
+        let inner = std::mem::take(&mut self.inner);
+        self.inner = apply_menu_styles(inner, self.theme.current().styles());
+    }
+}
+
+impl<M> Menu for ThemedMenu<M>
+where
+    M: MenuBuilder + Default,
+{
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn indicator(&self) -> &str {
+        self.inner.indicator()
+    }
+
+    fn is_active(&self) -> bool {
+        self.inner.is_active()
+    }
+
+    fn menu_event(&mut self, event: MenuEvent) {
+        self.apply_current_styles();
+        self.inner.menu_event(event);
+    }
+
+    fn can_quick_complete(&self) -> bool {
+        self.inner.can_quick_complete()
+    }
+
+    fn can_partially_complete(
+        &mut self,
+        values_updated: bool,
+        editor: &mut Editor,
+        completer: &mut dyn Completer,
+    ) -> bool {
+        self.apply_current_styles();
+        self.inner
+            .can_partially_complete(values_updated, editor, completer)
+    }
+
+    fn update_values(&mut self, editor: &mut Editor, completer: &mut dyn Completer) {
+        self.apply_current_styles();
+        self.inner.update_values(editor, completer);
+    }
+
+    fn update_working_details(
+        &mut self,
+        editor: &mut Editor,
+        completer: &mut dyn Completer,
+        painter: &Painter,
+    ) {
+        self.apply_current_styles();
+        self.inner
+            .update_working_details(editor, completer, painter);
+    }
+
+    fn replace_in_buffer(&self, editor: &mut Editor) {
+        self.inner.replace_in_buffer(editor);
+    }
+
+    fn menu_required_lines(&self, terminal_columns: u16) -> u16 {
+        self.inner.menu_required_lines(terminal_columns)
+    }
+
+    fn menu_string(&self, available_lines: u16, use_ansi_coloring: bool) -> String {
+        self.inner.menu_string(available_lines, use_ansi_coloring)
+    }
+
+    fn min_rows(&self) -> u16 {
+        self.inner.min_rows()
+    }
+
+    fn get_values(&self) -> &[Suggestion] {
+        self.inner.get_values()
+    }
+
+    fn set_cursor_pos(&mut self, pos: (u16, u16)) {
+        self.inner.set_cursor_pos(pos);
+    }
 }
 
 pub(crate) struct StringAwareIdeMenu {
     inner: IdeMenu,
+    theme: ThemeHandle,
 }
 
 impl StringAwareIdeMenu {
-    fn new(inner: IdeMenu) -> Self {
-        Self { inner }
+    fn new(inner: IdeMenu, theme: ThemeHandle) -> Self {
+        let mut menu = Self { inner, theme };
+        menu.apply_current_styles();
+        menu
+    }
+
+    fn apply_current_styles(&mut self) {
+        let inner = std::mem::take(&mut self.inner);
+        self.inner = apply_menu_styles(inner, self.theme.current().styles());
     }
 
     fn deactivate_if_completion_disabled(
@@ -100,6 +259,7 @@ impl StringAwareIdeMenu {
             return false;
         }
 
+        self.apply_current_styles();
         self.inner.update_values(editor, completer);
         self.inner.menu_event(MenuEvent::Deactivate);
         true
@@ -120,6 +280,7 @@ impl Menu for StringAwareIdeMenu {
     }
 
     fn menu_event(&mut self, event: MenuEvent) {
+        self.apply_current_styles();
         self.inner.menu_event(event);
     }
 
@@ -137,12 +298,14 @@ impl Menu for StringAwareIdeMenu {
             return false;
         }
 
+        self.apply_current_styles();
         self.inner
             .can_partially_complete(values_updated, editor, completer)
     }
 
     fn update_values(&mut self, editor: &mut Editor, completer: &mut dyn Completer) {
         if !self.deactivate_if_completion_disabled(editor, completer) {
+            self.apply_current_styles();
             self.inner.update_values(editor, completer);
         }
     }
@@ -154,6 +317,7 @@ impl Menu for StringAwareIdeMenu {
         painter: &Painter,
     ) {
         if !self.deactivate_if_completion_disabled(editor, completer) {
+            self.apply_current_styles();
             self.inner
                 .update_working_details(editor, completer, painter);
         }
@@ -428,11 +592,11 @@ fn is_history_accept_key(raw: &Event) -> bool {
 
 fn is_history_cancel_key(raw: &Event) -> bool {
     matches!(
-    	raw,
+        raw,
         Event::Key(KeyEvent {
-            code: KeyCode::Esc, ..
-        }) |
-        Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            ..
+        }) | Event::Key(KeyEvent {
             code: KeyCode::Char('c') | KeyCode::Char('d'),
             modifiers: KeyModifiers::CONTROL,
             ..
@@ -487,7 +651,7 @@ pub(crate) fn history_path() -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .context("could not determine a history directory")?;
-    let dir = base.join("wolfsh");
+    let dir = base.join("wolfish");
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("history"))
 }

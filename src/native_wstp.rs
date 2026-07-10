@@ -1,19 +1,24 @@
 use std::{
     io::{self, Write},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use anyhow::{Context, Result, anyhow, bail};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use nu_ansi_term::Color;
 use wolfram_expr::{Expr, ExprKind, Symbol};
-use wstp::{Link, Protocol, sys};
+use wstp::{Link, Protocol, UrgentMessage, sys};
 
 use crate::{
+    interrupt,
     kernel::{KernelExit, kernel_path},
     profiler::{profile_duration, profile_event},
-    theme::{Theme, ThemeHandle},
+    theme::ThemeHandle,
     wl::{WSTP_EVALUATE_USER_INPUT_WL, wolfram_function_call, wolfram_string_literal},
 };
 
@@ -77,7 +82,15 @@ fn print_kernel_message_text(
 }
 
 fn message_identifier_color_enabled(theme: Option<&ThemeHandle>) -> bool {
-    !matches!(theme.map(ThemeHandle::current), Some(Theme::Plain))
+    color_enabled(theme)
+}
+
+fn output_name_color_enabled(theme: Option<&ThemeHandle>) -> bool {
+    color_enabled(theme)
+}
+
+fn color_enabled(theme: Option<&ThemeHandle>) -> bool {
+    theme.is_none_or(|theme| !theme.current().is_plain())
 }
 
 fn render_message_text_with_color(text: &str, symbol: &str, tag: &str, use_color: bool) -> String {
@@ -160,7 +173,8 @@ impl WstpKernelClient {
             .map_err(|err| anyhow!("failed to create WSTP listener: {err:?}"))?;
         let link_name = link.link_name();
         let spawn_start = Instant::now();
-        let process = Command::new(path)
+        let mut command = Command::new(path);
+        command
             .arg("-wstp")
             .arg("-linkprotocol")
             .arg("SharedMemory")
@@ -169,7 +183,9 @@ impl WstpKernelClient {
             .arg(&link_name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        isolate_kernel_from_terminal_interrupts(&mut command);
+        let process = command
             .spawn()
             .context("failed to launch WolframKernel in WSTP mode")?;
         profile_duration("wstp.launch.spawn", spawn_start.elapsed(), "");
@@ -194,12 +210,13 @@ impl WstpKernelClient {
         input: &str,
         theme: Option<&ThemeHandle>,
         input_handler: Option<&mut KernelInputHandler<'_>>,
+        separate_input_and_output: bool,
     ) -> Result<()> {
         let previous_input_prompt = self.input_prompt.clone();
         let packets = self.evaluate_input_packets(input, input_handler)?;
         let input_prompt =
             next_input_prompt_after_evaluation(previous_input_prompt.as_deref(), &packets);
-        render_packets(&packets, theme)?;
+        render_packets(&packets, theme, separate_input_and_output)?;
         if let Some(input_prompt) = input_prompt {
             self.input_prompt = Some(input_prompt);
         }
@@ -247,6 +264,7 @@ impl WstpKernelClient {
         input_handler: Option<&mut KernelInputHandler<'_>>,
     ) -> Result<Vec<KernelPacket>> {
         self.ensure_initial_prompt_read()?;
+        interrupt::clear_kernel_interrupt_request();
         let start = Instant::now();
         let link = self.link.as_mut().context("WSTP link is closed")?;
         let input = wstp_user_input_text(input);
@@ -271,6 +289,7 @@ impl WstpKernelClient {
 
     fn evaluate_packet_to_string(&mut self, expr: &Expr) -> Result<String> {
         self.ensure_initial_prompt_read()?;
+        interrupt::clear_kernel_interrupt_request();
         let start = Instant::now();
         let link = self.link.as_mut().context("WSTP link is closed")?;
         link.put_eval_packet(expr)
@@ -432,6 +451,7 @@ fn read_packets_until_return(
 }
 
 fn next_packet_id(link: &mut Link, process: &mut Child, operation: &str) -> Result<i32> {
+    wait_for_packet_activity(link, process, operation)?;
     match link.raw_next_packet() {
         Ok(packet_id) => Ok(packet_id),
         Err(err) => {
@@ -442,6 +462,91 @@ fn next_packet_id(link: &mut Link, process: &mut Child, operation: &str) -> Resu
         }
     }
 }
+
+fn wait_for_packet_activity(link: &mut Link, process: &mut Child, operation: &str) -> Result<()> {
+    while !link.is_ready() {
+        if let Some(status) = process
+            .try_wait()
+            .context("failed to check WolframKernel process status")?
+        {
+            return kernel_exit_result(status, operation);
+        }
+
+        if take_kernel_interrupt_request() {
+            send_interrupt_message(link)?;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    Ok(())
+}
+
+fn kernel_exit_result(status: ExitStatus, operation: &str) -> Result<()> {
+    if let Some(code) = status.code() {
+        return Err(KernelExit::new(code).into());
+    }
+
+    bail!("WolframKernel exited with {status} during {operation}")
+}
+
+fn take_kernel_interrupt_request() -> bool {
+    interrupt::take_kernel_interrupt_request() || take_ctrl_c_key_event()
+}
+
+fn take_ctrl_c_key_event() -> bool {
+    match event::poll(Duration::from_millis(0)) {
+        Ok(true) => match event::read() {
+            Ok(event) => is_ctrl_c_key_event(&event),
+            Err(err) => {
+                profile_event(format!("terminal.event.read.failed\t{err:?}"));
+                false
+            }
+        },
+        Ok(false) => false,
+        Err(err) => {
+            profile_event(format!("terminal.event.poll.failed\t{err:?}"));
+            false
+        }
+    }
+}
+
+fn is_ctrl_c_key_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(KeyEvent {
+            code: KeyCode::Char('c') | KeyCode::Char('C'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        })
+    )
+}
+
+fn send_interrupt_message(link: &mut Link) -> Result<()> {
+    link.put_message(UrgentMessage::INTERRUPT)
+        .map_err(|err| anyhow!("failed to send WSTP interrupt message: {err:?}"))?;
+    profile_event("wstp.interrupt.sent");
+    Ok(())
+}
+
+fn isolate_kernel_from_terminal_interrupts(command: &mut Command) {
+    configure_kernel_process_group(command);
+}
+
+#[cfg(unix)]
+fn configure_kernel_process_group(command: &mut Command) {
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_kernel_process_group(_command: &mut Command) {}
 
 fn send_input_response(
     link: &mut Link,
@@ -705,10 +810,15 @@ fn debug_text(text: &str) -> String {
     format!("{text:?}")
 }
 
-fn render_packets(packets: &[KernelPacket], theme: Option<&ThemeHandle>) -> Result<()> {
+fn render_packets(
+    packets: &[KernelPacket],
+    theme: Option<&ThemeHandle>,
+    separate_input_and_output: bool,
+) -> Result<()> {
     let mut output_name: Option<&str> = None;
     let mut pending_message_identifier: Option<(&str, &str)> = None;
     let mut text_without_trailing_newline = false;
+    let mut output_separator_pending = separate_input_and_output;
 
     for (index, packet) in packets.iter().enumerate() {
         match packet {
@@ -716,6 +826,10 @@ fn render_packets(packets: &[KernelPacket], theme: Option<&ThemeHandle>) -> Resu
                 if text_is_input_prompt(packets, index) {
                     text_without_trailing_newline = false;
                     continue;
+                }
+                if output_separator_pending {
+                    print_kernel_text("\n")?;
+                    output_separator_pending = false;
                 }
                 if let Some((symbol, tag)) = pending_message_identifier.take() {
                     print_kernel_message_text(text, symbol, tag, theme)?;
@@ -729,19 +843,33 @@ fn render_packets(packets: &[KernelPacket], theme: Option<&ThemeHandle>) -> Resu
             }
             KernelPacket::OutputName(name) => output_name = Some(name),
             KernelPacket::Return(expr) | KernelPacket::ReturnExpression(expr) => {
+                if output_separator_pending {
+                    print_kernel_text("\n")?;
+                    output_separator_pending = false;
+                }
                 if text_without_trailing_newline {
                     print_kernel_text("\n")?;
                     text_without_trailing_newline = false;
                 }
                 let text = expr_string_value(expr).unwrap_or_else(|| expr.to_string());
                 render_return_text(&text, output_name.take(), theme)?;
+                if separate_input_and_output && !text.is_empty() {
+                    print_kernel_text("\n")?;
+                }
             }
             KernelPacket::ReturnText(text) => {
+                if output_separator_pending {
+                    print_kernel_text("\n")?;
+                    output_separator_pending = false;
+                }
                 if text_without_trailing_newline {
                     print_kernel_text("\n")?;
                     text_without_trailing_newline = false;
                 }
                 render_return_text(text, output_name.take(), theme)?;
+                if separate_input_and_output && !text.is_empty() {
+                    print_kernel_text("\n")?;
+                }
             }
             KernelPacket::Syntax(position) => {
                 print_kernel_text(&format!("Syntax error at position {position}\n"))?;
@@ -793,18 +921,29 @@ fn text_is_input_prompt(packets: &[KernelPacket], index: usize) -> bool {
 fn render_return_text(
     text: &str,
     output_name: Option<&str>,
-    _theme: Option<&ThemeHandle>,
+    theme: Option<&ThemeHandle>,
 ) -> Result<()> {
     if text.is_empty() {
         return Ok(());
     }
 
     if let Some(output_name) = output_name {
-        print_kernel_text(output_name)?;
+        print_kernel_text(&render_output_name_with_color(
+            output_name,
+            output_name_color_enabled(theme),
+        ))?;
     }
 
     println!("{text}");
     Ok(())
+}
+
+fn render_output_name_with_color(output_name: &str, use_color: bool) -> String {
+    if use_color {
+        Color::DarkGray.paint(output_name).to_string()
+    } else {
+        output_name.to_owned()
+    }
 }
 
 fn symbol(name: &str) -> Expr {
@@ -828,9 +967,39 @@ fn wrap_to_string_query(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        KernelPacket, next_input_prompt_after_evaluation, render_message_text_with_color,
-        wrap_to_string_query,
+        KernelExit, KernelPacket, kernel_exit_result, next_input_prompt_after_evaluation,
+        render_message_text_with_color, render_output_name_with_color, wrap_to_string_query,
     };
+    use std::process::{Command, ExitStatus};
+
+    #[test]
+    fn kernel_exit_result_preserves_child_exit_code() {
+        let err = kernel_exit_result(child_status_for_exit_code(23), "test operation")
+            .expect_err("kernel exit status should be returned as an error");
+        let exit = err
+            .downcast_ref::<KernelExit>()
+            .expect("child exit status should map to KernelExit");
+
+        assert_eq!(exit.code, 23);
+    }
+
+    #[cfg(unix)]
+    fn child_status_for_exit_code(code: i32) -> ExitStatus {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("exit {code}"))
+            .status()
+            .expect("failed to run test shell process")
+    }
+
+    #[cfg(windows)]
+    fn child_status_for_exit_code(code: i32) -> ExitStatus {
+        Command::new("cmd")
+            .arg("/C")
+            .arg(format!("exit /B {code}"))
+            .status()
+            .expect("failed to run test shell process")
+    }
 
     #[test]
     fn wrap_to_string_query_returns_string_results_unconverted() {
@@ -884,6 +1053,19 @@ mod tests {
             render_message_text_with_color(text, "System`General", "stop", false),
             text
         );
+    }
+
+    #[test]
+    fn output_name_renders_dark_gray() {
+        assert_eq!(
+            render_output_name_with_color("Out[7]= ", true),
+            nu_ansi_term::Color::DarkGray.paint("Out[7]= ").to_string()
+        );
+    }
+
+    #[test]
+    fn output_name_stays_plain_when_color_is_disabled() {
+        assert_eq!(render_output_name_with_color("Out[7]= ", false), "Out[7]= ");
     }
 
     #[test]

@@ -10,9 +10,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$BinaryName = 'wolfsh'
+$BinaryName = 'wolfish'
 $ExecutableName = "$BinaryName.exe"
-$GitHubRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPO)) { 'ToneAr/wolfsh' } else { $env:GITHUB_REPO }
+$GitHubRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPO)) { 'ToneAr/wolfish' } else { $env:GITHUB_REPO }
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = 'latest'
@@ -20,14 +20,14 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 
 function Show-Usage {
     @"
-Install wolfsh on Windows.
+Install wolfish on Windows.
 
 Usage:
   .\install.ps1 [options]
 
 Options:
   -InstallDir DIR    Install the binary into DIR.
-                     Defaults to `%LOCALAPPDATA%\Programs\wolfsh\bin,
+                     Defaults to `%LOCALAPPDATA%\Programs\wolfish\bin,
                      unless `%USERPROFILE%\.local\bin is writable and already on PATH.
   -Version TAG       Install a specific GitHub release tag, such as v0.2.0.
                      Defaults to the latest release.
@@ -38,7 +38,7 @@ Options:
 Environment:
   INSTALL_DIR         Same as -InstallDir.
   VERSION             Same as -Version.
-  GITHUB_REPO         GitHub repo to download from. Defaults to ToneAr/wolfsh.
+  GITHUB_REPO         GitHub repo to download from. Defaults to ToneAr/wolfish.
   WOLFRAM_CLI_SHA256  Optional expected SHA-256 checksum for the release archive.
 "@
 }
@@ -164,7 +164,7 @@ function Test-WritableDirectory {
         return $false
     }
 
-    $probe = Join-Path $Directory ".wolfsh-install-test-$PID"
+    $probe = Join-Path $Directory ".wolfish-install-test-$PID"
     try {
         New-Item -ItemType File -Path $probe -Force | Out-Null
         Remove-Item -LiteralPath $probe -Force
@@ -190,7 +190,7 @@ function Get-DefaultInstallDir {
         $localAppData = Join-Path $homeDirectory 'AppData\Local'
     }
 
-    return (Join-Path $localAppData 'Programs\wolfsh\bin')
+    return (Join-Path $localAppData 'Programs\wolfish\bin')
 }
 
 function Get-ReleaseTargetName {
@@ -199,7 +199,7 @@ function Get-ReleaseTargetName {
     }
 
     if (-not [Environment]::Is64BitOperatingSystem) {
-        Fail 'unsupported CPU architecture: wolfsh release builds are only available for Windows x86_64'
+        Fail 'unsupported CPU architecture: wolfish release builds are only available for Windows x86_64'
     }
 
     return 'windows-x86_64'

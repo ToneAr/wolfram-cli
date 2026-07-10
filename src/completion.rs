@@ -17,7 +17,7 @@ use reedline::{Completer, Span, Suggestion};
 use crate::{
     kernel::{SharedKernel, lock_kernel},
     profiler::profile_duration,
-    theme::{Theme, ThemeHandle, ThemeStyles},
+    theme::{BuiltinTheme, Theme, ThemeHandle, ThemeRegistry, ThemeStyles},
     wl::{
         OPTIONS_QUERY_WL, SYMBOL_COMPLETION_QUERY_WL, SYMBOL_DETAILS_BATCH_QUERY_WL,
         wolfram_function_call, wolfram_string_literal,
@@ -638,7 +638,9 @@ impl Completer for WolframCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let complete_start = Instant::now();
         let styles = self.theme.current().styles();
-        if let Some(suggestions) = command_completion_suggestions(line, pos, styles) {
+        if let Some(suggestions) =
+            command_completion_suggestions(line, pos, styles, self.theme.registry())
+        {
             profile_duration(
                 "complete.command",
                 complete_start.elapsed(),
@@ -810,7 +812,11 @@ pub(crate) fn file_completion_suggestions_from(
             Suggestion {
                 value: escape_wolfram_string_fragment(&completed),
                 description: Some(if is_dir { "directory" } else { "file" }.to_string()),
-                style: Some(styles.string),
+                style: Some(if is_dir {
+                    styles.completion_directory
+                } else {
+                    styles.completion_file
+                }),
                 extra: None,
                 span: Span {
                     start: context.start,
@@ -887,6 +893,7 @@ pub(crate) fn command_completion_suggestions(
     line: &str,
     pos: usize,
     styles: ThemeStyles,
+    registry: &ThemeRegistry,
 ) -> Option<Vec<Suggestion>> {
     if !line.starts_with(':') || pos > line.len() {
         return None;
@@ -921,6 +928,7 @@ pub(crate) fn command_completion_suggestions(
             argument_start,
             pos,
             styles,
+            registry,
         )),
         _ => Some(Vec::new()),
     }
@@ -950,48 +958,56 @@ pub(crate) fn theme_arg_suggestions(
     start: usize,
     end: usize,
     styles: ThemeStyles,
+    registry: &ThemeRegistry,
 ) -> Vec<Suggestion> {
-    if prefix.is_empty() {
-        return [
-            ("dark", theme_description(Theme::Dark)),
-            ("light", theme_description(Theme::Light)),
-            ("solarized", theme_description(Theme::Solarized)),
-            ("gruvbox", theme_description(Theme::Gruvbox)),
-            ("monokai", theme_description(Theme::Monokai)),
-            ("plain", theme_description(Theme::Plain)),
-            ("list", "Browse available themes".to_string()),
-            ("show", "Show the current theme".to_string()),
-        ]
-        .into_iter()
-        .map(|(value, description)| command_suggestion(value, &description, start, end, styles))
-        .collect();
-    }
+    let mut suggestions = registry
+        .themes()
+        .iter()
+        .filter(|theme| prefix.is_empty() || command_candidate_matches(theme.name(), prefix))
+        .map(|theme| {
+            command_suggestion(theme.name(), &theme_description(theme), start, end, styles)
+        })
+        .collect::<Vec<_>>();
 
-    let theme_suggestions = Theme::ALL.map(|theme| {
-        let description = theme_description(theme);
-        (theme.name(), description)
-    });
-    theme_suggestions
-        .into_iter()
-        .chain([
-            ("solarized-dark", theme_description(Theme::Solarized)),
-            ("gruvbox-dark", theme_description(Theme::Gruvbox)),
-            ("none", theme_description(Theme::Plain)),
-            ("no-color", theme_description(Theme::Plain)),
-            ("nocolor", theme_description(Theme::Plain)),
-            ("list", "Browse available themes".to_string()),
-            ("ls", "Browse available themes".to_string()),
-            ("browse", "Browse available themes".to_string()),
-            ("show", "Show the current theme".to_string()),
-            ("current", "Show the current theme".to_string()),
-        ])
-        .filter(|(value, _)| command_candidate_matches(value, prefix))
-        .map(|(value, description)| command_suggestion(value, &description, start, end, styles))
-        .collect()
+    let aliases = [
+        (
+            "solarized-dark",
+            theme_description(&Theme::builtin(BuiltinTheme::Solarized)),
+        ),
+        (
+            "gruvbox-dark",
+            theme_description(&Theme::builtin(BuiltinTheme::Gruvbox)),
+        ),
+        ("none", theme_description(&Theme::plain())),
+        ("no-color", theme_description(&Theme::plain())),
+        ("nocolor", theme_description(&Theme::plain())),
+        ("list", "Browse available themes".to_string()),
+        ("ls", "Browse available themes".to_string()),
+        ("browse", "Browse available themes".to_string()),
+        ("show", "Show the current theme".to_string()),
+        ("current", "Show the current theme".to_string()),
+    ];
+
+    suggestions.extend(
+        aliases
+            .into_iter()
+            .filter(|(value, _)| {
+                if prefix.is_empty() {
+                    matches!(*value, "list" | "show")
+                } else {
+                    command_candidate_matches(value, prefix)
+                }
+            })
+            .map(|(value, description)| {
+                command_suggestion(value, &description, start, end, styles)
+            }),
+    );
+
+    suggestions
 }
 
-pub(crate) fn theme_description(theme: Theme) -> String {
-    if theme == Theme::Plain {
+pub(crate) fn theme_description(theme: &Theme) -> String {
+    if theme.is_plain() {
         "Disable syntax highlighting colors".to_string()
     } else {
         format!("Use the {} syntax highlighting theme", theme.name())
@@ -1183,14 +1199,11 @@ pub(crate) fn symbol_suggestions(
                 },
             };
 
+            let source_kind = completion_source_kind(candidate);
             let (description, style) = match candidate.kind {
                 CompletionKind::Symbol => (
                     symbol_completion_description(&details),
-                    if completion_source_kind(candidate) == CompletionSourceKind::System {
-                        styles.completion_symbol
-                    } else {
-                        styles.completion_user_symbol
-                    },
+                    symbol_completion_style(source_kind, styles),
                 ),
                 CompletionKind::Context => (
                     context_completion_description(&details),
@@ -1204,7 +1217,7 @@ pub(crate) fn symbol_suggestions(
                 style: Some(style),
                 extra: Some(vec![
                     CompletionSortMetadata {
-                        source: completion_source_kind(candidate),
+                        source: source_kind,
                         frequency: candidate.frequency,
                     }
                     .serialize(),
@@ -1214,6 +1227,20 @@ pub(crate) fn symbol_suggestions(
             }
         })
         .collect()
+}
+
+pub(crate) fn symbol_completion_style(
+    source_kind: CompletionSourceKind,
+    styles: ThemeStyles,
+) -> nu_ansi_term::Style {
+    match source_kind {
+        CompletionSourceKind::Global => styles.completion_global_symbol,
+        CompletionSourceKind::System => styles.completion_symbol,
+        CompletionSourceKind::OtherSingleNameContext
+        | CompletionSourceKind::MultiNameContext
+        | CompletionSourceKind::Other
+        | CompletionSourceKind::Option => styles.completion_user_symbol,
+    }
 }
 
 pub(crate) fn completion_source_kind(candidate: &CompletionItem) -> CompletionSourceKind {

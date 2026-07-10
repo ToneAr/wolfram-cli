@@ -126,7 +126,7 @@ pub(crate) fn highlight_wolfram_text(
     out
 }
 
-pub(crate) fn print_highlighted(text: &str, theme: Theme) {
+pub(crate) fn print_highlighted(text: &str, theme: &Theme) {
     for (style, fragment) in highlight_wolfram_text(text, theme.styles(), None, None).buffer {
         print!("{}", style.paint(fragment));
     }

@@ -23,6 +23,12 @@ use crate::{
 
 pub(crate) type SharedKernel = Arc<Mutex<KernelClient>>;
 
+#[derive(Debug, Clone)]
+pub(crate) struct WolframVersions {
+    pub(crate) kernel: String,
+    pub(crate) wolframscript: String,
+}
+
 #[derive(Debug)]
 pub(crate) struct KernelExit {
     pub(crate) code: i32,
@@ -65,6 +71,47 @@ pub(crate) fn run_wolframscript_file(file: PathBuf, script_args: Vec<OsString>) 
         bail!("wolframscript exited with {status}");
     }
     Ok(())
+}
+
+pub(crate) fn wolfram_versions() -> WolframVersions {
+    WolframVersions {
+        kernel: wolfram_kernel_version().unwrap_or_else(|_| "unavailable".to_string()),
+        wolframscript: wolframscript_version().unwrap_or_else(|_| "unavailable".to_string()),
+    }
+}
+
+fn wolfram_kernel_version() -> Result<String> {
+    let mut command = Command::new(kernel_path()?);
+    command.arg("-version");
+    command_version(command, "WolframKernel")
+}
+
+fn wolframscript_version() -> Result<String> {
+    let mut command = Command::new("wolframscript");
+    command.arg("-version");
+    command_version(command, "wolframscript")
+}
+
+fn command_version(mut command: Command, name: &str) -> Result<String> {
+    let output = command
+        .output()
+        .with_context(|| format!("failed to launch {name} for version detection"))?;
+
+    if !output.status.success() {
+        bail!("{name} version detection exited with {}", output.status);
+    }
+
+    first_output_line(&output.stdout)
+        .or_else(|| first_output_line(&output.stderr))
+        .with_context(|| format!("{name} did not print a version"))
+}
+
+fn first_output_line(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 pub(crate) struct KernelClient {
@@ -117,8 +164,8 @@ impl KernelClient {
     }
 
     pub(crate) fn evaluate_once(&mut self, input: &str, use_color: bool) -> Result<()> {
-        let theme = (!use_color).then(|| ThemeHandle::new(Theme::Plain));
-        self.evaluate(input, theme.as_ref(), None)
+        let theme = (!use_color).then(|| ThemeHandle::builtin(Theme::plain()));
+        self.evaluate(input, theme.as_ref(), None, false)
     }
 
     pub(crate) fn status(&self) -> KernelStatus {
@@ -143,7 +190,7 @@ impl KernelClient {
         theme: &ThemeHandle,
         input_handler: &mut dyn FnMut(&native_wstp::KernelInputRequest) -> Result<Option<String>>,
     ) -> Result<()> {
-        self.evaluate(input, Some(theme), Some(input_handler))
+        self.evaluate(input, Some(theme), Some(input_handler), true)
     }
 
     fn evaluate(
@@ -153,9 +200,11 @@ impl KernelClient {
         input_handler: Option<
             &mut dyn FnMut(&native_wstp::KernelInputRequest) -> Result<Option<String>>,
         >,
+        separate_input_and_output: bool,
     ) -> Result<()> {
         let _activity = ActivityGuard::new(self.active.clone());
-        self.wstp.evaluate_once(input, theme, input_handler)?;
+        self.wstp
+            .evaluate_once(input, theme, input_handler, separate_input_and_output)?;
         self.ready = true;
         Ok(())
     }
@@ -198,9 +247,10 @@ pub(crate) fn kernel_path() -> Result<PathBuf> {
 
     if let Ok(install_dir) = wolfram_installation_directory() {
         if let Some(candidate) = native_kernel_path(&install_dir)
-            && candidate.exists() {
-                return Ok(candidate);
-            }
+            && candidate.exists()
+        {
+            return Ok(candidate);
+        }
 
         let candidate = install_dir.join("Executables").join(kernel_binary_name());
         if candidate.exists() {

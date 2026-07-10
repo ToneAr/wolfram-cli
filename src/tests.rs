@@ -17,7 +17,11 @@ use std::{
 };
 
 fn test_styles() -> ThemeStyles {
-    Theme::Dark.styles()
+    Theme::dark().styles()
+}
+
+fn test_theme_registry() -> ThemeRegistry {
+    ThemeRegistry::builtin_only()
 }
 
 fn test_user_symbols() -> Arc<Mutex<HashSet<String>>> {
@@ -92,7 +96,7 @@ fn temp_completion_dir() -> PathBuf {
         .as_nanos();
     for attempt in 0..100 {
         let dir = std::env::temp_dir().join(format!(
-            "wolfsh-completion-test-{}-{unique}-{attempt}",
+            "wolfish-completion-test-{}-{unique}-{attempt}",
             std::process::id()
         ));
         match fs::create_dir(&dir) {
@@ -306,89 +310,112 @@ fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> ReedlineRawEvent {
 
 #[test]
 fn parses_repl_commands() {
-    assert_eq!(parse_repl_command(":clear").unwrap(), ReplCommand::Clear);
-    assert_eq!(parse_repl_command(":cls").unwrap(), ReplCommand::Clear);
-    assert_eq!(parse_repl_command(":help").unwrap(), ReplCommand::Help);
-    assert_eq!(parse_repl_command(":?").unwrap(), ReplCommand::Help);
+    let registry = test_theme_registry();
     assert_eq!(
-        parse_repl_command(":theme").unwrap(),
+        parse_repl_command(":clear", &registry).unwrap(),
+        ReplCommand::Clear
+    );
+    assert_eq!(
+        parse_repl_command(":cls", &registry).unwrap(),
+        ReplCommand::Clear
+    );
+    assert_eq!(
+        parse_repl_command(":help", &registry).unwrap(),
+        ReplCommand::Help
+    );
+    assert_eq!(
+        parse_repl_command(":?", &registry).unwrap(),
+        ReplCommand::Help
+    );
+    assert_eq!(
+        parse_repl_command(":theme", &registry).unwrap(),
         ReplCommand::Theme(ThemeCommand::Cycle)
     );
     assert_eq!(
-        parse_repl_command(":theme show").unwrap(),
+        parse_repl_command(":theme show", &registry).unwrap(),
         ReplCommand::Theme(ThemeCommand::Show)
     );
     assert_eq!(
-        parse_repl_command(":theme light").unwrap(),
-        ReplCommand::Theme(ThemeCommand::Set(Theme::Light))
+        parse_repl_command(":theme light", &registry).unwrap(),
+        ReplCommand::Theme(ThemeCommand::Set(Theme::builtin(BuiltinTheme::Light)))
     );
     assert_eq!(
-        parse_repl_command(":theme DARK").unwrap(),
-        ReplCommand::Theme(ThemeCommand::Set(Theme::Dark))
+        parse_repl_command(":theme DARK", &registry).unwrap(),
+        ReplCommand::Theme(ThemeCommand::Set(Theme::builtin(BuiltinTheme::Dark)))
     );
     assert_eq!(
-        parse_repl_command(":theme no-color").unwrap(),
-        ReplCommand::Theme(ThemeCommand::Set(Theme::Plain))
+        parse_repl_command(":theme no-color", &registry).unwrap(),
+        ReplCommand::Theme(ThemeCommand::Set(Theme::plain()))
     );
-    assert_eq!(parse_repl_command(":q").unwrap(), ReplCommand::Quit);
     assert_eq!(
-        parse_repl_command(":history").unwrap(),
+        parse_repl_command(":q", &registry).unwrap(),
+        ReplCommand::Quit
+    );
+    assert_eq!(
+        parse_repl_command(":history", &registry).unwrap(),
         ReplCommand::History
     );
-    assert_eq!(parse_repl_command(":hist").unwrap(), ReplCommand::History);
+    assert_eq!(
+        parse_repl_command(":hist", &registry).unwrap(),
+        ReplCommand::History
+    );
 }
 
 #[test]
 fn rejects_unknown_or_malformed_repl_commands() {
-    assert!(parse_repl_command(":unknown").is_err());
-    assert!(parse_repl_command(":clear now").is_err());
-    assert!(parse_repl_command(":theme neon").is_err());
-    assert!(parse_repl_command(":quit now").is_err());
-    assert!(parse_repl_command(":history now").is_err());
+    let registry = test_theme_registry();
+    assert!(parse_repl_command(":unknown", &registry).is_err());
+    assert!(parse_repl_command(":clear now", &registry).is_err());
+    assert!(parse_repl_command(":theme neon", &registry).is_err());
+    assert!(parse_repl_command(":quit now", &registry).is_err());
+    assert!(parse_repl_command(":history now", &registry).is_err());
 }
 
 #[test]
 fn no_color_mode_keeps_theme_plain() {
-    let theme = ThemeHandle::new(Theme::Plain);
+    let theme = ThemeHandle::builtin(Theme::plain());
 
     assert_eq!(
         execute_repl_command(":theme dark", &theme, false),
         CommandAction::Continue
     );
-    assert_eq!(theme.current(), Theme::Plain);
+    assert_eq!(theme.current(), Theme::plain());
 
     assert_eq!(
         execute_repl_command(":theme", &theme, false),
         CommandAction::Continue
     );
-    assert_eq!(theme.current(), Theme::Plain);
+    assert_eq!(theme.current(), Theme::plain());
 }
 
 #[test]
 fn theme_commands_can_change_theme_when_color_is_enabled() {
-    let theme = ThemeHandle::new(Theme::Plain);
+    let theme = ThemeHandle::builtin(Theme::plain());
 
     assert_eq!(
         execute_repl_command(":theme dark", &theme, true),
         CommandAction::Continue
     );
-    assert_eq!(theme.current(), Theme::Dark);
+    assert_eq!(theme.current(), Theme::dark());
 }
 
 #[test]
 fn completes_repl_command_names_only_at_line_start() {
-    let suggestions = command_completion_suggestions(":t", 2, test_styles()).unwrap();
+    let registry = test_theme_registry();
+    let suggestions = command_completion_suggestions(":t", 2, test_styles(), &registry).unwrap();
     assert_eq!(suggestions.len(), 1);
     assert_eq!(suggestions[0].value, "theme");
     assert_eq!(suggestions[0].span.start, 1);
     assert_eq!(suggestions[0].span.end, 2);
 
-    assert!(command_completion_suggestions("x:t", 3, test_styles()).is_none());
+    assert!(command_completion_suggestions("x:t", 3, test_styles(), &registry).is_none());
 }
 
 #[test]
 fn completes_theme_command_arguments() {
-    let suggestions = command_completion_suggestions(":theme l", 8, test_styles()).unwrap();
+    let registry = test_theme_registry();
+    let suggestions =
+        command_completion_suggestions(":theme l", 8, test_styles(), &registry).unwrap();
     let matching_values: Vec<_> = suggestions
         .iter()
         .map(|suggestion| suggestion.value.as_str())
@@ -397,7 +424,7 @@ fn completes_theme_command_arguments() {
     assert_eq!(suggestions[0].span.start, 7);
     assert_eq!(suggestions[0].span.end, 8);
 
-    let values: Vec<_> = command_completion_suggestions(":theme ", 7, test_styles())
+    let values: Vec<_> = command_completion_suggestions(":theme ", 7, test_styles(), &registry)
         .unwrap()
         .into_iter()
         .map(|suggestion| suggestion.value)
@@ -424,7 +451,7 @@ fn colon_lines_do_not_use_wolfram_symbol_completion() {
         Arc::new(AtomicU64::new(0)),
         test_user_symbols(),
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     assert!(completer.complete(":P", 2).is_empty());
 }
@@ -456,6 +483,12 @@ fn filesystem_completion_is_enabled_only_for_path_like_strings() {
         .collect::<Vec<_>>();
 
     assert_eq!(values, vec!["./src/", "./sample.wls", "./scratch.txt"]);
+    assert_eq!(
+        suggestions[0].style,
+        Some(test_styles().completion_directory)
+    );
+    assert_eq!(suggestions[1].style, Some(test_styles().completion_file));
+    assert_ne!(suggestions[0].style, suggestions[1].style);
     assert!(
         suggestions
             .iter()
@@ -528,7 +561,7 @@ fn symbol_completion_is_disabled_inside_strings() {
         Arc::new(AtomicU64::new(0)),
         user_symbols,
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let inside_string = "StringJoin[\"Pl";
     let escaped_quote_string = "\"escaped \\\"Pl";
@@ -690,7 +723,7 @@ fn reattaches_context_when_names_returns_short_symbol() {
 }
 
 #[test]
-fn completion_menu_colors_user_symbols_differently_from_builtins() {
+fn completion_menu_colors_symbols_contexts_and_global_symbols_differently() {
     let source = CompletionSource::with_backend(
         Arc::new(FakeBackend::empty()),
         Arc::new(AtomicU64::new(0)),
@@ -702,19 +735,43 @@ fn completion_menu_colors_user_symbols_differently_from_builtins() {
         frequency: None,
         context: Some("System`".to_string()),
     };
+    let global = CompletionItem {
+        value: "myGlobal".to_string(),
+        kind: CompletionKind::Symbol,
+        frequency: None,
+        context: Some("Global`".to_string()),
+    };
     let user_defined = CompletionItem {
         value: "myVar".to_string(),
         kind: CompletionKind::Symbol,
         frequency: None,
-        context: None,
+        context: Some("MyContext`".to_string()),
+    };
+    let context = CompletionItem {
+        value: "MyContext`".to_string(),
+        kind: CompletionKind::Context,
+        frequency: None,
+        context: Some("MyContext`".to_string()),
     };
 
-    let suggestions =
-        symbol_suggestions(&[builtin, user_defined], "", 0, 0, &source, test_styles());
+    let suggestions = symbol_suggestions(
+        &[builtin, global, user_defined, context],
+        "",
+        0,
+        0,
+        &source,
+        test_styles(),
+    );
 
     let builtin_style = suggestions
         .iter()
         .find(|s| s.value == "Plot")
+        .unwrap()
+        .style
+        .unwrap();
+    let global_style = suggestions
+        .iter()
+        .find(|s| s.value == "myGlobal")
         .unwrap()
         .style
         .unwrap();
@@ -724,10 +781,20 @@ fn completion_menu_colors_user_symbols_differently_from_builtins() {
         .unwrap()
         .style
         .unwrap();
+    let context_style = suggestions
+        .iter()
+        .find(|s| s.value == "MyContext`")
+        .unwrap()
+        .style
+        .unwrap();
 
     assert_eq!(builtin_style, test_styles().completion_symbol);
+    assert_eq!(global_style, test_styles().completion_global_symbol);
     assert_eq!(user_style, test_styles().completion_user_symbol);
-    assert_ne!(builtin_style, user_style);
+    assert_eq!(context_style, test_styles().completion_context);
+    assert_ne!(builtin_style, global_style);
+    assert_ne!(global_style, user_style);
+    assert_ne!(user_style, context_style);
 }
 
 #[test]
@@ -817,7 +884,7 @@ fn local_assigned_symbols_complete_immediately() {
         Arc::new(AtomicU64::new(0)),
         user_symbols,
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let suggestions = completer.complete("var", 3);
 
@@ -837,7 +904,7 @@ fn local_beginpackage_contexts_complete_immediately() {
         Arc::new(AtomicU64::new(0)),
         user_symbols,
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let suggestions = completer.complete("MyC", 3);
 
@@ -869,7 +936,7 @@ fn kernel_contexts_complete_for_unqualified_prefixes() {
         Arc::new(AtomicU64::new(0)),
         test_user_symbols(),
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let _ = completer.complete("MyC", 3);
     wait_until(|| {
@@ -910,7 +977,7 @@ fn kernel_symbols_inside_contexts_complete_after_context_prefix() {
         Arc::new(AtomicU64::new(0)),
         test_user_symbols(),
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let _ = completer.complete("MyContext`", 10);
     wait_until(|| {
@@ -939,7 +1006,7 @@ fn local_qualified_assignments_remember_context_and_symbol() {
         Arc::new(AtomicU64::new(0)),
         user_symbols,
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let context_suggestions = completer.complete("MyC", 3);
     let symbol_suggestions = completer.complete("foo", 3);
@@ -1041,7 +1108,7 @@ fn completion_never_blocks_on_a_slow_kernel_backend() {
         Arc::new(AtomicU64::new(0)),
         test_user_symbols(),
     );
-    let mut completer = WolframCompleter::new(source, ThemeHandle::new(Theme::Dark));
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
 
     let start = Instant::now();
     let _ = completer.complete("Pl", 2);

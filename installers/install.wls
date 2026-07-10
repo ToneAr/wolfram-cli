@@ -1,7 +1,7 @@
 #!/usr/bin/env wolframscript
-$binaryName = "wolfsh";
+$binaryName = "wolfish";
 
-$defaultGitHubRepo = "ToneAr/wolfsh";
+$defaultGitHubRepo = "ToneAr/wolfish";
 
 $cli = ResourceFunction["CommandLineTools"];
 
@@ -19,7 +19,7 @@ commandLineSpec[] :=
 helpBase[] :=
 	StringRiffle[
 		{
-			"Install wolfsh on Linux, macOS, or Windows.",
+			"Install wolfish on Linux, macOS, or Windows.",
 			"",
 			"Usage:",
 			"  wolframscript -script install.wls [options]",
@@ -32,7 +32,7 @@ helpBase[] :=
 			"  INSTALL_DIR          Same as --install-dir.",
 			"  VERSION              Same as --version.",
 			"  GITHUB_REPO          GitHub repo to download from.",
-			"                       Defaults to ToneAr/wolfsh.",
+			"                       Defaults to ToneAr/wolfish.",
 			"  WOLFRAM_CLI_SHA256   Optional expected SHA-256 checksum."
 		},
 		"\n"
@@ -121,7 +121,7 @@ writableDirectoryQ[directory_String] :=
 			FileNameJoin[
 				{
 					directory,
-					StringJoin[ ".wolfsh-install-test-", ToString[$ProcessID]]
+					StringJoin[ ".wolfish-install-test-", ToString[$ProcessID]]
 				}
 			];
 		stream = Check[OpenWrite[probe], $Failed];

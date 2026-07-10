@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use anyhow::{Context, Result, bail};
 
-use crate::theme::{Theme, ThemeHandle, print_theme_browser};
+use crate::theme::{Theme, ThemeHandle, ThemeRegistry, print_theme_browser};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandAction {
@@ -11,7 +11,7 @@ pub(crate) enum CommandAction {
     Quit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReplCommand {
     Clear,
     Help,
@@ -20,7 +20,7 @@ pub(crate) enum ReplCommand {
     Quit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ThemeCommand {
     Cycle,
     List,
@@ -33,7 +33,7 @@ pub(crate) fn execute_repl_command(
     theme: &ThemeHandle,
     use_color: bool,
 ) -> CommandAction {
-    let command = match parse_repl_command(input) {
+    let command = match parse_repl_command(input, theme.registry()) {
         Ok(command) => command,
         Err(message) => {
             println!("{message}");
@@ -48,7 +48,7 @@ pub(crate) fn execute_repl_command(
             CommandAction::Continue
         }
         ReplCommand::Help => {
-            print_command_help(theme.current());
+            print_command_help(theme.current(), theme.registry());
             CommandAction::Continue
         }
         ReplCommand::History => CommandAction::OpenHistory,
@@ -57,13 +57,12 @@ pub(crate) fn execute_repl_command(
                 println!("Color is disabled by --no-color; theme remains plain.");
                 return CommandAction::Continue;
             }
-            let next = theme.current().next();
-            theme.set(next);
-            println!("Theme: {}", next.name());
+            let next = theme.next();
+            set_theme(theme, next);
             CommandAction::Continue
         }
         ReplCommand::Theme(ThemeCommand::List) => {
-            print_theme_browser(theme.current(), use_color);
+            print_theme_browser(theme.current(), theme.registry(), use_color);
             CommandAction::Continue
         }
         ReplCommand::Theme(ThemeCommand::Show) => {
@@ -71,19 +70,18 @@ pub(crate) fn execute_repl_command(
             CommandAction::Continue
         }
         ReplCommand::Theme(ThemeCommand::Set(next)) => {
-            if !use_color && next != Theme::Plain {
+            if !use_color && !next.is_plain() {
                 println!("Color is disabled by --no-color; theme remains plain.");
                 return CommandAction::Continue;
             }
-            theme.set(next);
-            println!("Theme: {}", next.name());
+            set_theme(theme, next);
             CommandAction::Continue
         }
         ReplCommand::Quit => CommandAction::Quit,
     }
 }
 
-fn print_command_help(theme: Theme) {
+fn print_command_help(theme: Theme, registry: &ThemeRegistry) {
     println!("Commands:");
     println!("  :clear                Clear the console.");
     println!("  :help | :h | :?       Show this help.");
@@ -94,20 +92,24 @@ fn print_command_help(theme: Theme) {
         "  :theme                Cycle theme. Current: {}.",
         theme.name()
     );
-    println!("  :theme {{name}}         Options:");
-    println!("                        | plain");
-    println!("                        | dark");
-    println!("                        | light");
-    println!("                        | solarized");
-    println!("                        | gruvbox");
-    println!("                        | monokai");
-    println!("                        Set syntax highlighting theme.");
+    println!("  :theme {{name}}         Set syntax highlighting theme. Options:");
+    for available_theme in registry.themes() {
+        println!("                        | {}", available_theme.name());
+    }
     println!("  :theme list           Browse available themes.");
     println!("  :theme show           Show the current theme.");
     println!("  :quit | :q            Quit the REPL.");
 }
 
-pub(crate) fn parse_repl_command(input: &str) -> Result<ReplCommand> {
+fn set_theme(theme: &ThemeHandle, next: Theme) {
+    let name = next.name().to_string();
+    match theme.set(next) {
+        Ok(()) => println!("Theme: {name}"),
+        Err(err) => println!("Theme: {name} (warning: could not save preference: {err:#})"),
+    }
+}
+
+pub(crate) fn parse_repl_command(input: &str, registry: &ThemeRegistry) -> Result<ReplCommand> {
     let command = input
         .trim()
         .strip_prefix(':')
@@ -149,7 +151,8 @@ pub(crate) fn parse_repl_command(input: &str) -> Result<ReplCommand> {
             }
             Some(value) => {
                 let theme_value = value.to_lowercase();
-                let theme = Theme::parse(&theme_value)
+                let theme = registry
+                    .parse(&theme_value)
                     .with_context(|| format!("unknown theme {value:?}; use :theme list"))?;
                 reject_extra_args(parts, ":theme <name>")?;
                 Ok(ReplCommand::Theme(ThemeCommand::Set(theme)))

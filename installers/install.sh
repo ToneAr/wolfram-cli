@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-BINARY_NAME="wolfsh"
-GITHUB_REPO="${GITHUB_REPO:-ToneAr/wolfsh}"
+BINARY_NAME="wolfish"
+GITHUB_REPO="${GITHUB_REPO:-ToneAr/wolfish}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-}"
 BUILD_FROM_SOURCE=0
@@ -10,7 +10,7 @@ FORCE=0
 
 usage() {
     cat <<EOF
-Install wolfsh on Linux or macOS.
+Install wolfish on Linux or macOS.
 
 Usage:
   ./install.sh [options]
@@ -28,7 +28,7 @@ Options:
 Environment:
   INSTALL_DIR          Same as --install-dir.
   VERSION              Same as --version.
-  GITHUB_REPO          GitHub repo to download from. Defaults to ToneAr/wolfsh.
+  GITHUB_REPO          GitHub repo to download from. Defaults to ToneAr/wolfish.
   WOLFRAM_CLI_SHA256   Optional expected SHA-256 checksum for the release archive.
 EOF
 }
