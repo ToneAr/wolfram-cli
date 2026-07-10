@@ -427,17 +427,17 @@ fn is_history_accept_key(raw: &Event) -> bool {
 }
 
 fn is_history_cancel_key(raw: &Event) -> bool {
-    match raw {
+    matches!(
+    	raw,
         Event::Key(KeyEvent {
             code: KeyCode::Esc, ..
-        }) => true,
+        }) |
         Event::Key(KeyEvent {
             code: KeyCode::Char('c') | KeyCode::Char('d'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        }) => true,
-        _ => false,
-    }
+        })
+    )
 }
 
 fn plain_char_insert(raw: &Event) -> Option<ReedlineEvent> {

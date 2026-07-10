@@ -28,7 +28,11 @@ pub(crate) enum ThemeCommand {
     Set(Theme),
 }
 
-pub(crate) fn execute_repl_command(input: &str, theme: &ThemeHandle) -> CommandAction {
+pub(crate) fn execute_repl_command(
+    input: &str,
+    theme: &ThemeHandle,
+    use_color: bool,
+) -> CommandAction {
     let command = match parse_repl_command(input) {
         Ok(command) => command,
         Err(message) => {
@@ -49,13 +53,17 @@ pub(crate) fn execute_repl_command(input: &str, theme: &ThemeHandle) -> CommandA
         }
         ReplCommand::History => CommandAction::OpenHistory,
         ReplCommand::Theme(ThemeCommand::Cycle) => {
+            if !use_color {
+                println!("Color is disabled by --no-color; theme remains plain.");
+                return CommandAction::Continue;
+            }
             let next = theme.current().next();
             theme.set(next);
             println!("Theme: {}", next.name());
             CommandAction::Continue
         }
         ReplCommand::Theme(ThemeCommand::List) => {
-            print_theme_browser(theme.current());
+            print_theme_browser(theme.current(), use_color);
             CommandAction::Continue
         }
         ReplCommand::Theme(ThemeCommand::Show) => {
@@ -63,6 +71,10 @@ pub(crate) fn execute_repl_command(input: &str, theme: &ThemeHandle) -> CommandA
             CommandAction::Continue
         }
         ReplCommand::Theme(ThemeCommand::Set(next)) => {
+            if !use_color && next != Theme::Plain {
+                println!("Color is disabled by --no-color; theme remains plain.");
+                return CommandAction::Continue;
+            }
             theme.set(next);
             println!("Theme: {}", next.name());
             CommandAction::Continue

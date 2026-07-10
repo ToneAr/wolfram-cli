@@ -151,12 +151,16 @@ impl Theme {
     }
 }
 
-pub(crate) fn print_theme_browser(current: Theme) {
+pub(crate) fn print_theme_browser(current: Theme, use_color: bool) {
     println!("Themes:");
     for theme in Theme::ALL {
         let marker = if theme == current { "*" } else { " " };
         print!("  {marker} {:<9} ", theme.name());
-        print_highlighted("Plot[Sin[x], {x, 0, 2 Pi}] (* sample *) \"text\" 42", theme);
+        let preview_theme = if use_color { theme } else { Theme::Plain };
+        print_highlighted(
+            "Plot[Sin[x], {x, 0, 2 Pi}] (* sample *) \"text\" 42",
+            preview_theme,
+        );
     }
 }
 

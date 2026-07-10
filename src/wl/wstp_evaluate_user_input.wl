@@ -16,7 +16,7 @@ Function[
 			Off[General::shdw],
 			ReleaseHold[
 				ToExpression[input, InputForm, HoldComplete] /. {
-					HoldPattern[Input[prompt_]] :> promptedInput[prompt],
+					HoldPattern[Input[prompt_]]       :> promptedInput[prompt],
 					HoldPattern[InputString[prompt_]] :> promptedInputString[
 						prompt
 					]

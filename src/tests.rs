@@ -348,6 +348,34 @@ fn rejects_unknown_or_malformed_repl_commands() {
 }
 
 #[test]
+fn no_color_mode_keeps_theme_plain() {
+    let theme = ThemeHandle::new(Theme::Plain);
+
+    assert_eq!(
+        execute_repl_command(":theme dark", &theme, false),
+        CommandAction::Continue
+    );
+    assert_eq!(theme.current(), Theme::Plain);
+
+    assert_eq!(
+        execute_repl_command(":theme", &theme, false),
+        CommandAction::Continue
+    );
+    assert_eq!(theme.current(), Theme::Plain);
+}
+
+#[test]
+fn theme_commands_can_change_theme_when_color_is_enabled() {
+    let theme = ThemeHandle::new(Theme::Plain);
+
+    assert_eq!(
+        execute_repl_command(":theme dark", &theme, true),
+        CommandAction::Continue
+    );
+    assert_eq!(theme.current(), Theme::Dark);
+}
+
+#[test]
 fn completes_repl_command_names_only_at_line_start() {
     let suggestions = command_completion_suggestions(":t", 2, test_styles()).unwrap();
     assert_eq!(suggestions.len(), 1);

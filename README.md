@@ -1,13 +1,16 @@
 # Wolf Shell
 
+`wolfsh` is a beta Rust CLI for running Wolfram Language from the terminal with a persistent WSTP-backed REPL, one-shot expression evaluation, script delegation through `wolframscript`, and dynamic completions.
+
 ## Installation
 
 Cross-platform WolframScript installer (requires `wolframscript`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ToneAr/wolfsh/main/installers/install.wls -o install.wls
-wolframscript -script install.wls
+wolframscript -file https://raw.githubusercontent.com/ToneAr/wolfsh/main/installers/install.wls 
 ```
+
+To pin a specific beta release tag, add `--version v0.5.0`.
 
 Windows PowerShell:
 
@@ -16,7 +19,9 @@ irm https://raw.githubusercontent.com/ToneAr/wolfsh/main/installers/install.wls 
 wolframscript -script .\install.wls
 ```
 
-Platform-specific installers are also available.
+To pin a specific beta release tag, add `--version v0.5.0`.
+
+Platform-specific installers are also available. Omit the version option to install the latest GitHub release, or pass `--version v0.5.0` / `-Version v0.5.0` to install this beta explicitly.
 
 Linux/macOS:
 
@@ -32,7 +37,15 @@ irm https://raw.githubusercontent.com/ToneAr/wolfsh/main/installers/install.ps1 
 
 ## Usage
 
-For a detailed architecture and evaluation pipeline walkthrough, including WSTP packet flow diagrams, see [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
+`wolfsh` has three user-facing execution modes:
+
+| Mode | Command | Backend |
+| --- | --- | --- |
+| Interactive REPL | `wolfsh` or `cargo run` | Native WSTP session |
+| One-shot expression | `wolfsh -e 'Range[5]^2'` | Native WSTP session |
+| Script file | `wolfsh script.wls -- arg1` | Delegated to `wolframscript` |
+
+For a detailed architecture and evaluation pipeline walkthrough, including WSTP packet flow diagrams, see [`docs/Architecture.md`](docs/Architecture.md).
 
 Start the interactive REPL. This uses the native WSTP backend and keeps a kernel session alive for REPL state:
 
@@ -99,6 +112,12 @@ Disable FrontEnd integration and use the simpler kernel-only completion engine w
 cargo run -- --no-frontend
 ```
 
+Disable ANSI coloring with:
+
+```sh
+cargo run -- --no-color
+```
+
 ## REPL Commands
 
 Lines that start with `:` are handled by the CLI instead of being evaluated as Wolfram Language input:
@@ -128,6 +147,8 @@ The `wstp` crate links Wolfram's WSTP static library at build time. A build mach
 Runtime expression evaluation requires WSTP; there is no subprocess fallback.
 
 ## Release Builds
+
+See [`docs/BETA_RELEASE.md`](docs/BETA_RELEASE.md) for the beta release notes, install examples, known limitations, and release verification checklist.
 
 GitHub Actions builds packaged binaries when a `v*` or `build*` tag is pushed. `test*` tags and manual workflow runs exercise the build/test path without packaging or publishing artifacts, unless the manual run is explicitly started from a `v*` or `build*` tag ref.
 

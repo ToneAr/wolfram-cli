@@ -15,7 +15,11 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use wolfram_app_discovery::WolframApp;
 
-use crate::{native_wstp, profiler::profile_duration, theme::ThemeHandle};
+use crate::{
+    native_wstp,
+    profiler::profile_duration,
+    theme::{Theme, ThemeHandle},
+};
 
 pub(crate) type SharedKernel = Arc<Mutex<KernelClient>>;
 
@@ -112,8 +116,9 @@ impl KernelClient {
         })
     }
 
-    pub(crate) fn evaluate_once(&mut self, input: &str) -> Result<()> {
-        self.evaluate(input, None, None)
+    pub(crate) fn evaluate_once(&mut self, input: &str, use_color: bool) -> Result<()> {
+        let theme = (!use_color).then(|| ThemeHandle::new(Theme::Plain));
+        self.evaluate(input, theme.as_ref(), None)
     }
 
     pub(crate) fn status(&self) -> KernelStatus {
@@ -192,11 +197,10 @@ pub(crate) fn kernel_path() -> Result<PathBuf> {
     }
 
     if let Ok(install_dir) = wolfram_installation_directory() {
-        if let Some(candidate) = native_kernel_path(&install_dir) {
-            if candidate.exists() {
+        if let Some(candidate) = native_kernel_path(&install_dir)
+            && candidate.exists() {
                 return Ok(candidate);
             }
-        }
 
         let candidate = install_dir.join("Executables").join(kernel_binary_name());
         if candidate.exists() {

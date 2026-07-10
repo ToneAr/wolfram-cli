@@ -16,6 +16,10 @@ struct Args {
     #[arg(long = "no-frontend")]
     no_frontend: bool,
 
+    /// Disable ANSI coloring.
+    #[arg(long = "no-color")]
+    no_color: bool,
+
     /// Evaluate a Wolfram Language expression and exit.
     #[arg(short = 'e', long = "eval")]
     eval: Option<String>,
@@ -31,10 +35,11 @@ struct Args {
 pub(crate) fn run() -> Result<()> {
     let args = Args::parse();
 
+    let use_color = !args.no_color;
     let result = match (args.eval, args.file) {
-        (Some(expr), None) => KernelClient::new()?.evaluate_once(&expr),
+        (Some(expr), None) => KernelClient::new()?.evaluate_once(&expr, use_color),
         (None, Some(file)) => run_wolframscript_file(file, args.script_args),
-        (None, None) => run_repl(!args.no_frontend),
+        (None, None) => run_repl(!args.no_frontend, use_color),
         (Some(_), Some(_)) => bail!("use either --eval or a file, not both"),
     };
 

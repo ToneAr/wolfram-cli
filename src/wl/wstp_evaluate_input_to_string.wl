@@ -15,7 +15,7 @@ Function[
 					HoldPattern[InputString[prompt_]] :> promptedInputString[
 						prompt
 					],
-					HoldPattern[Input[prompt_]] :> promptedInput[prompt]
+					HoldPattern[Input[prompt_]]       :> promptedInput[prompt]
 				}
 			],
 			InputForm

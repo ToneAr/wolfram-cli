@@ -1,0 +1,33 @@
+#!/usr/bin/wolframscript
+
+CL = ResourceFunction["CommandLineTools"];
+
+SetOptions[CL,
+	"ArgumentSpecification" -> {
+		"$1" -> _String -> Automatic
+	},
+	"LogToFile" -> False
+]
+Enclose[
+	HERE = DirectoryName @ $InputFileName;
+	cargoFile = FileNameJoin[{ParentDirectory @ HERE, "Cargo.toml"}];
+	cargo = Confirm[
+		Import @ cargoFile,
+		"Failed to import Cargo.toml"
+	];
+	pre = cargo["package", "version"];
+	new = CL["Parse", "$1"] // Replace[Automatic :>
+		Module[{vals = Internal`StringToMInteger /@ StringSplit[pre, "."]},
+			vals[[Length[vals]]] += 1;
+			StringRiffle[vals, "."]
+		]
+	] // ConfirmMatch[#, _String, "Failed to generate new version"]&;
+	cargo["package", "version"] = new;
+	Confirm[
+		Export[cargoFile, cargo, "TOML", OverwriteTarget -> True],
+		"Failed to update Cargo.toml"
+	];
+	CL["Log", "SUCC", StringTemplate["Bumbped version `` -> ``"][pre, new]]
+	,
+	Function[e, CL["Log", "FAIL", e["Information"]]; Exit[1]]
+]

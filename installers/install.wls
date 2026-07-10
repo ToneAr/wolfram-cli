@@ -12,7 +12,7 @@ commandLineSpec[] :=
 		{"install-dir", "InstallDir"}            -> _String -> "",
 		{"version", "Version"}                   -> _String -> "latest",
 		{"build-from-source", "BuildFromSource"} -> _?BooleanQ -> False,
-		{"force", "Force"}                       -> _?BooleanQ -> False,
+		{"force", "f"}                           -> _?BooleanQ -> False,
 		{"help", "h"}                            -> _?BooleanQ -> False
 	};
 
@@ -293,7 +293,7 @@ findReleaseBinary[tempDir_String, package_String] :=
 	];
 
 requireCommand[command_String] :=
-	If[!StringQ[FindExecutable[command]],
+	If[FailureQ[RunProcess[{command}]],
 		fail[StringJoin[ "required command not found: ", command]]
 	];
 

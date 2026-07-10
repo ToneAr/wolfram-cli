@@ -29,7 +29,7 @@ use crate::{
     wolfram_syntax::remember_user_symbols,
 };
 
-pub(crate) fn run_repl(enable_frontend: bool) -> Result<()> {
+pub(crate) fn run_repl(enable_frontend: bool, use_color: bool) -> Result<()> {
     let history = history_path()?;
     let completion_epoch = Arc::new(AtomicU64::new(0));
     let user_symbols = Arc::new(Mutex::new(HashSet::new()));
@@ -40,8 +40,9 @@ pub(crate) fn run_repl(enable_frontend: bool) -> Result<()> {
         None
     };
     spawn_kernel_warmup(kernel.clone());
-    print_welcome();
-    let theme = ThemeHandle::new(Theme::Dark);
+    print_welcome(use_color);
+    let initial_theme = if use_color { Theme::Dark } else { Theme::Plain };
+    let theme = ThemeHandle::new(initial_theme);
     let completion_source = CompletionSource::new(
         kernel.clone(),
         completion_epoch.clone(),
@@ -51,6 +52,7 @@ pub(crate) fn run_repl(enable_frontend: bool) -> Result<()> {
     let history_trigger = HistoryTrigger::new();
     let mut line_editor = Reedline::create()
         .use_kitty_keyboard_enhancement(true)
+        .with_ansi_colors(use_color)
         .with_history(Box::new(FileBackedHistory::with_file(2000, history)?))
         .with_highlighter(Box::new(WolframHighlighter::new(
             symbol_set,
@@ -84,7 +86,7 @@ pub(crate) fn run_repl(enable_frontend: bool) -> Result<()> {
                     break;
                 }
                 if input.starts_with(':') {
-                    match execute_repl_command(input, &theme) {
+                    match execute_repl_command(input, &theme, use_color) {
                         CommandAction::Quit => break,
                         CommandAction::OpenHistory => {
                             history_trigger.arm();
@@ -117,20 +119,24 @@ pub(crate) fn run_repl(enable_frontend: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_welcome() {
-    println!(
-        "{}{}",
-        nu_ansi_term::Style::new()
-            .bold()
-            .underline()
-            .fg(nu_ansi_term::Color::Red)
-            .paint("Wolfram"),
-        nu_ansi_term::Style::new()
-            .bold()
-            .underline()
-            .fg(nu_ansi_term::Color::DarkGray)
-            .paint("Shell")
-    );
+fn print_welcome(use_color: bool) {
+    if use_color {
+        println!(
+            "{}{}",
+            nu_ansi_term::Style::new()
+                .bold()
+                .underline()
+                .fg(nu_ansi_term::Color::Red)
+                .paint("Wolfram"),
+            nu_ansi_term::Style::new()
+                .bold()
+                .underline()
+                .fg(nu_ansi_term::Color::DarkGray)
+                .paint("Shell")
+        );
+    } else {
+        println!("WolframShell");
+    }
     println!("TUI Version: {}", env!("CARGO_PKG_VERSION"));
     println!("Type :help for commands, :quit or Ctrl-D to quit.\n");
 }

@@ -54,11 +54,10 @@ pub(crate) fn wolfram_input_is_incomplete(line: &str) -> bool {
                     return false;
                 }
             }
-            ')' => {
-                if !matches!(stack.pop(), Some('(')) {
+            ')'
+                if !matches!(stack.pop(), Some('(')) => {
                     return false;
                 }
-            }
             _ => {}
         }
     }
@@ -117,10 +116,7 @@ pub(crate) fn cursor_is_in_wolfram_string(line: &str, pos: usize) -> bool {
 }
 
 pub(crate) fn wolfram_string_content_start_at_cursor(line: &str, pos: usize) -> Option<usize> {
-    let Some(before_cursor) = line.get(..pos) else {
-        return None;
-    };
-
+    let before_cursor = line.get(..pos)?;
     let mut chars = before_cursor.char_indices().peekable();
     let mut string_start = None;
     let mut escaped = false;

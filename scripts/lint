@@ -1,0 +1,4 @@
+#!/bin/bash
+
+prettier . --write
+cargo clippy --fix

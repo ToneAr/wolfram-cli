@@ -58,11 +58,11 @@ flowchart TD
 
 ### CLI modes
 
-| Mode | User command | Runtime path | Kernel lifetime | Backend |
-| --- | --- | --- | --- | --- |
-| REPL | `wolfsh` | `run_repl` | Persistent until quit | WSTP |
-| One-shot expression | `wolfsh -e 'Range[5]^2'` | `KernelClient::evaluate_once` | One process for that evaluation | WSTP |
-| Script file | `wolfsh script.wls -- arg1` | `wolframscript -file script.wls arg1` | Managed by `wolframscript` | `wolframscript`, not this WSTP client |
+| Mode                | User command                | Runtime path                          | Kernel lifetime                 | Backend                               |
+| ------------------- | --------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------- |
+| REPL                | `wolfsh`                    | `run_repl`                            | Persistent until quit           | WSTP                                  |
+| One-shot expression | `wolfsh -e 'Range[5]^2'`    | `KernelClient::evaluate_once`         | One process for that evaluation | WSTP                                  |
+| Script file         | `wolfsh script.wls -- arg1` | `wolframscript -file script.wls arg1` | Managed by `wolframscript`      | `wolframscript`, not this WSTP client |
 
 ## Kernel discovery
 
@@ -248,18 +248,18 @@ sequenceDiagram
 
 ### Packet handling table
 
-| WSTP packet | Internal enum | Main behavior |
-| --- | --- | --- |
-| `InputNamePacket` | `KernelPacket::InputName` | Stores or updates the displayed `In[n]:=` prompt. |
-| `OutputNamePacket` | `KernelPacket::OutputName` | Saved and printed before the following return value. |
-| `TextPacket` | `KernelPacket::Text` | Printed directly unless it is the prompt text immediately before an input request. |
-| `MessagePacket` | `KernelPacket::Message` | Currently decoded but not printed directly; message text usually arrives through `TextPacket`. |
-| `ReturnPacket` / `ReturnExpressionPacket` | `KernelPacket::Return` / `ReturnExpression` | Rendered as expression text, or as the raw string if the expression is a string. |
-| `ReturnTextPacket` | `KernelPacket::ReturnText` | Rendered as text. |
-| `SyntaxPacket` | `KernelPacket::Syntax` | Printed as `Syntax error at position n`. |
-| `InputPacket` | `KernelPacket::Input` | REPL asks the user for expression input and responds with `EnterTextPacket`. |
-| `InputStringPacket` | `KernelPacket::InputString` | REPL asks the user for string input and responds with a raw string packet. |
-| Dialog/menu/display/call packets | Matching `KernelPacket` variants | Decoded and either printed diagnostically or ignored, depending on packet type. |
+| WSTP packet                               | Internal enum                               | Main behavior                                                                                  |
+| ----------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `InputNamePacket`                         | `KernelPacket::InputName`                   | Stores or updates the displayed `In[n]:=` prompt.                                              |
+| `OutputNamePacket`                        | `KernelPacket::OutputName`                  | Saved and printed before the following return value.                                           |
+| `TextPacket`                              | `KernelPacket::Text`                        | Printed directly unless it is the prompt text immediately before an input request.             |
+| `MessagePacket`                           | `KernelPacket::Message`                     | Currently decoded but not printed directly; message text usually arrives through `TextPacket`. |
+| `ReturnPacket` / `ReturnExpressionPacket` | `KernelPacket::Return` / `ReturnExpression` | Rendered as expression text, or as the raw string if the expression is a string.               |
+| `ReturnTextPacket`                        | `KernelPacket::ReturnText`                  | Rendered as text.                                                                              |
+| `SyntaxPacket`                            | `KernelPacket::Syntax`                      | Printed as `Syntax error at position n`.                                                       |
+| `InputPacket`                             | `KernelPacket::Input`                       | REPL asks the user for expression input and responds with `EnterTextPacket`.                   |
+| `InputStringPacket`                       | `KernelPacket::InputString`                 | REPL asks the user for string input and responds with a raw string packet.                     |
+| Dialog/menu/display/call packets          | Matching `KernelPacket` variants            | Decoded and either printed diagnostically or ignored, depending on packet type.                |
 
 ### Prompt update strategy
 

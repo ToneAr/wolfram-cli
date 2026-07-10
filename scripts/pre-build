@@ -1,0 +1,4 @@
+#!/bin/bash
+
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+node "$HERE/../build_tools/generate-kernel-data.ts"
