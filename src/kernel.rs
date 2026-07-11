@@ -373,7 +373,7 @@ mod tests {
         ScriptInvocation, script_command_line, script_evaluation_environment,
         script_input_file_name, strip_shebang_preserving_line_numbers,
     };
-    use std::{ffi::OsString, path::Path};
+    use std::{env, ffi::OsString, path::Path};
 
     #[test]
     fn strips_shebang_without_changing_following_line_numbers() {
@@ -413,10 +413,14 @@ mod tests {
 
     #[test]
     fn script_input_file_name_is_absolute_script_file_path() {
-        let input_file_name = script_input_file_name(Path::new("/tmp/wolfie/script.wl"))
-            .expect("absolute script path should convert");
+        let script_file = env::current_dir()
+            .expect("test current directory should be available")
+            .join("wolfie")
+            .join("script.wl");
+        let input_file_name =
+            script_input_file_name(&script_file).expect("absolute script path should convert");
 
-        assert_eq!(input_file_name, "/tmp/wolfie/script.wl");
+        assert_eq!(input_file_name, script_file.to_str().unwrap());
     }
 
     #[test]
