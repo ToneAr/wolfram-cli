@@ -33,6 +33,14 @@ pub(crate) fn profile_event(event: impl AsRef<str>) {
     let _ = writeln!(file, "{}", event.as_ref());
 }
 
+pub(crate) fn profile_event_with(event: impl FnOnce() -> String) {
+    let Some(file) = profiler() else {
+        return;
+    };
+    let mut file = file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = writeln!(file, "{}", event());
+}
+
 pub(crate) fn profile_duration(label: &str, elapsed: Duration, detail: impl AsRef<str>) {
     if elapsed < PROFILE_WARN_AFTER && profiler().is_none() {
         return;
@@ -42,4 +50,16 @@ pub(crate) fn profile_duration(label: &str, elapsed: Duration, detail: impl AsRe
         elapsed.as_millis(),
         detail.as_ref()
     ));
+}
+
+pub(crate) fn profile_duration_with(
+    label: &str,
+    elapsed: Duration,
+    detail: impl FnOnce() -> String,
+) {
+    let Some(file) = profiler() else {
+        return;
+    };
+    let mut file = file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = writeln!(file, "{label}\t{}ms\t{}", elapsed.as_millis(), detail());
 }

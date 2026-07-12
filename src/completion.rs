@@ -18,7 +18,7 @@ use reedline::{Completer, Hinter, History, Span, Suggestion};
 
 use crate::{
     kernel::{SharedKernel, lock_kernel},
-    profiler::profile_duration,
+    profiler::{profile_duration, profile_duration_with},
     theme::{BuiltinTheme, Theme, ThemeHandle, ThemeRegistry, ThemeStyles},
     wl::{
         OPTIONS_QUERY_WL, SYMBOL_COMPLETION_QUERY_WL, SYMBOL_DETAILS_BATCH_QUERY_WL,
@@ -199,6 +199,7 @@ fn spawn_completion_worker(
     symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
     options_cache: AsyncCache<String, Vec<String>>,
     known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
+    generation: Arc<AtomicU64>,
 ) -> mpsc::Sender<CompletionJob> {
     let (sender, receiver) = mpsc::channel::<CompletionJob>();
     thread::spawn(move || {
@@ -213,6 +214,7 @@ fn spawn_completion_worker(
                     &known_qualified_symbols,
                     job,
                 );
+                generation.fetch_add(1, Ordering::Relaxed);
             }
         }
     });
@@ -306,12 +308,14 @@ fn process_completion_job(
 fn spawn_completion_detail_worker(
     backend: Arc<dyn KernelBackend>,
     details_cache: AsyncCache<String, CompletionItemDetails>,
+    generation: Arc<AtomicU64>,
 ) -> mpsc::Sender<CompletionDetailJob> {
     let (sender, receiver) = mpsc::channel::<CompletionDetailJob>();
     thread::spawn(move || {
         while let Ok(first_job) = receiver.recv() {
             let job = coalesced_detail_job(first_job, &receiver, &details_cache);
             process_detail_job(&backend, &details_cache, job);
+            generation.fetch_add(1, Ordering::Relaxed);
         }
     });
     sender
@@ -408,6 +412,24 @@ pub(crate) struct CompletionSource {
     pub(crate) symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
     pub(crate) details_cache: AsyncCache<String, CompletionItemDetails>,
     pub(crate) options_cache: AsyncCache<String, Vec<String>>,
+    /// Bumped by the background workers after every cache fill, so cheap
+    /// equality checks can detect "new results arrived" without inspecting
+    /// the caches themselves.
+    generation: Arc<AtomicU64>,
+    complete_memo: Arc<Mutex<Option<CompleteMemo>>>,
+}
+
+/// The most recent `Completer::complete` result. Reedline runs the completer
+/// several times per keystroke (menu update plus ghost-text hint, each on the
+/// same line and cursor), so replaying the last result while nothing changed
+/// removes all but one full completion pass per keystroke.
+struct CompleteMemo {
+    line: String,
+    pos: usize,
+    epoch: u64,
+    generation: u64,
+    theme: String,
+    suggestions: Vec<Suggestion>,
 }
 
 #[derive(Clone)]
@@ -416,6 +438,12 @@ pub(crate) struct SymbolHighlighterLookup {
     job_sender: mpsc::Sender<CompletionJob>,
     symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
     known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
+    /// Prefixes whose ready results were already folded into
+    /// `known_qualified_symbols` for a given epoch. The highlighter calls
+    /// `request` for every non-builtin word on every repaint; without this
+    /// marker each of those calls would re-insert up to a full result batch
+    /// of freshly formatted symbol names per keystroke.
+    remembered: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl CompletionSource {
@@ -436,14 +464,19 @@ impl CompletionSource {
         let details_cache = AsyncCache::new();
         let options_cache = AsyncCache::new();
         let known_qualified_symbols = Arc::new(Mutex::new(HashSet::new()));
+        let generation = Arc::new(AtomicU64::new(0));
         let job_sender = spawn_completion_worker(
             backend.clone(),
             symbols_cache.clone(),
             options_cache.clone(),
             known_qualified_symbols.clone(),
+            generation.clone(),
         );
-        let detail_job_sender =
-            spawn_completion_detail_worker(backend.clone(), details_cache.clone());
+        let detail_job_sender = spawn_completion_detail_worker(
+            backend.clone(),
+            details_cache.clone(),
+            generation.clone(),
+        );
         Self {
             epoch,
             user_symbols,
@@ -453,11 +486,61 @@ impl CompletionSource {
             symbols_cache,
             details_cache,
             options_cache,
+            generation,
+            complete_memo: Arc::new(Mutex::new(None)),
         }
     }
 
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    fn memoized_suggestions(
+        &self,
+        line: &str,
+        pos: usize,
+        epoch: u64,
+        generation: u64,
+        theme: &str,
+    ) -> Option<Vec<Suggestion>> {
+        let memo = self
+            .complete_memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let memo = memo.as_ref()?;
+        (memo.line == line
+            && memo.pos == pos
+            && memo.epoch == epoch
+            && memo.generation == generation
+            && memo.theme == theme)
+            .then(|| memo.suggestions.clone())
+    }
+
+    fn memoize_suggestions(
+        &self,
+        line: &str,
+        pos: usize,
+        epoch: u64,
+        generation: u64,
+        theme: &str,
+        suggestions: &[Suggestion],
+    ) {
+        let mut memo = self
+            .complete_memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *memo = Some(CompleteMemo {
+            line: line.to_string(),
+            pos,
+            epoch,
+            generation,
+            theme: theme.to_string(),
+            suggestions: suggestions.to_vec(),
+        });
     }
 
     pub(crate) fn highlighter_lookup(&self) -> SymbolHighlighterLookup {
@@ -466,6 +549,7 @@ impl CompletionSource {
             job_sender: self.job_sender.clone(),
             symbols_cache: self.symbols_cache.clone(),
             known_qualified_symbols: self.known_qualified_symbols.clone(),
+            remembered: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -486,11 +570,9 @@ impl CompletionSource {
 
         if prefix.starts_with("System`") {
             let items = builtin_symbols_for_prefix(prefix);
-            profile_duration(
-                "source.symbols.builtin",
-                start.elapsed(),
-                format!("prefix={prefix:?} count={}", items.len()),
-            );
+            profile_duration_with("source.symbols.builtin", start.elapsed(), || {
+                format!("prefix={prefix:?} count={}", items.len())
+            });
             return items;
         }
 
@@ -511,31 +593,25 @@ impl CompletionSource {
                 }
             },
         );
-        profile_duration(
-            "source.symbols.kernel_cache",
-            cache_start.elapsed(),
+        profile_duration_with("source.symbols.kernel_cache", cache_start.elapsed(), || {
             format!(
                 "prefix={prefix:?} query_prefix={query_prefix:?} count={}",
                 items.len()
-            ),
-        );
+            )
+        });
 
         if !prefix.contains('`') {
             let builtin_start = Instant::now();
             items.extend(builtin_symbols_for_prefix(prefix));
-            profile_duration(
-                "source.symbols.builtins",
-                builtin_start.elapsed(),
-                format!("prefix={prefix:?} count={}", items.len()),
-            );
+            profile_duration_with("source.symbols.builtins", builtin_start.elapsed(), || {
+                format!("prefix={prefix:?} count={}", items.len())
+            });
         }
         self.remember_known_qualified_symbols(&items);
 
-        profile_duration(
-            "source.symbols",
-            start.elapsed(),
-            format!("prefix={prefix:?} count={}", items.len()),
-        );
+        profile_duration_with("source.symbols", start.elapsed(), || {
+            format!("prefix={prefix:?} count={}", items.len())
+        });
         items
     }
 
@@ -630,16 +706,14 @@ impl CompletionSource {
             });
         }
 
-        profile_duration(
-            "source.usage_details",
-            start.elapsed(),
+        profile_duration_with("source.usage_details", start.elapsed(), || {
             format!(
                 "requested={} ready={} spawned={}",
                 symbols.len(),
                 ready.len(),
                 spawned
-            ),
-        );
+            )
+        });
         ready
     }
 
@@ -661,11 +735,9 @@ impl CompletionSource {
                 Vec::new()
             }
         };
-        profile_duration(
-            "source.options",
-            start.elapsed(),
-            format!("head={head} count={}", options.len()),
-        );
+        profile_duration_with("source.options", start.elapsed(), || {
+            format!("head={head} count={}", options.len())
+        });
         options
     }
 }
@@ -677,9 +749,13 @@ impl SymbolHighlighterLookup {
         }
         let epoch = self.epoch.load(Ordering::Relaxed);
         let prefix = symbol_highlighter_query_prefix(symbol);
+        if self.already_remembered(&prefix, epoch) {
+            return;
+        }
         match self.symbols_cache.poll_or_claim(&prefix, epoch) {
             CachePoll::Ready(items) => {
                 remember_known_qualified_symbols(&self.known_qualified_symbols, &items);
+                self.mark_remembered(prefix, epoch);
             }
             CachePoll::Spawn => {
                 let _ = self
@@ -702,6 +778,7 @@ impl SymbolHighlighterLookup {
         loop {
             if let Some(items) = self.symbols_cache.ready(&prefix, epoch) {
                 remember_known_qualified_symbols(&self.known_qualified_symbols, &items);
+                self.mark_remembered(prefix, epoch);
                 return;
             }
 
@@ -711,6 +788,21 @@ impl SymbolHighlighterLookup {
             }
             thread::sleep(Duration::from_millis(2).min(deadline - now));
         }
+    }
+
+    fn already_remembered(&self, prefix: &str, epoch: u64) -> bool {
+        self.remembered
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(prefix)
+            == Some(&epoch)
+    }
+
+    fn mark_remembered(&self, prefix: String, epoch: u64) {
+        self.remembered
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(prefix, epoch);
     }
 }
 
@@ -1069,33 +1161,43 @@ pub(crate) fn completion_hint_suffix(
 impl Completer for WolframCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let complete_start = Instant::now();
-        let styles = self.theme.current().styles();
+        let epoch = self.source.epoch();
+        let generation = self.source.generation();
+        let theme = self.theme.current();
+        if let Some(suggestions) =
+            self.source
+                .memoized_suggestions(line, pos, epoch, generation, theme.name())
+        {
+            return suggestions;
+        }
+
+        let styles = theme.styles();
         if let Some(suggestions) =
             command_completion_suggestions(line, pos, styles, self.theme.registry())
         {
-            profile_duration(
-                "complete.command",
-                complete_start.elapsed(),
+            profile_duration_with("complete.command", complete_start.elapsed(), || {
                 format!(
                     "line_len={} pos={pos} count={}",
                     line.len(),
                     suggestions.len()
-                ),
-            );
+                )
+            });
+            self.source
+                .memoize_suggestions(line, pos, epoch, generation, theme.name(), &suggestions);
             return suggestions;
         }
 
         if cursor_is_in_wolfram_string(line, pos) {
             let suggestions = file_completion_suggestions(line, pos, styles);
-            profile_duration(
-                "complete.string_filesystem",
-                complete_start.elapsed(),
+            profile_duration_with("complete.string_filesystem", complete_start.elapsed(), || {
                 format!(
                     "line_len={} pos={pos} count={}",
                     line.len(),
                     suggestions.len()
-                ),
-            );
+                )
+            });
+            self.source
+                .memoize_suggestions(line, pos, epoch, generation, theme.name(), &suggestions);
             return suggestions;
         }
 
@@ -1105,11 +1207,11 @@ impl Completer for WolframCompleter {
         let option_head = option_context(line, start);
 
         if short_prefix.is_empty() && !prefix.ends_with('`') {
-            profile_duration(
-                "complete.empty",
-                complete_start.elapsed(),
-                format!("line_len={} pos={pos}", line.len()),
-            );
+            profile_duration_with("complete.empty", complete_start.elapsed(), || {
+                format!("line_len={} pos={pos}", line.len())
+            });
+            self.source
+                .memoize_suggestions(line, pos, epoch, generation, theme.name(), &[]);
             return Vec::new();
         }
 
@@ -1122,11 +1224,9 @@ impl Completer for WolframCompleter {
             Duration::ZERO
         };
         let symbols = self.source.symbols_for_prefix_wait(prefix, symbol_wait);
-        profile_duration(
-            "complete.load_symbols",
-            symbols_start.elapsed(),
-            format!("prefix={prefix:?} count={}", symbols.len()),
-        );
+        profile_duration_with("complete.load_symbols", symbols_start.elapsed(), || {
+            format!("prefix={prefix:?} count={}", symbols.len())
+        });
         let symbol_suggestions_start = Instant::now();
         suggestions.extend(symbol_suggestions(
             &symbols,
@@ -1136,20 +1236,18 @@ impl Completer for WolframCompleter {
             &self.source,
             styles,
         ));
-        profile_duration(
+        profile_duration_with(
             "complete.symbol_suggestions",
             symbol_suggestions_start.elapsed(),
-            format!("prefix={prefix:?} total={}", suggestions.len()),
+            || format!("prefix={prefix:?} total={}", suggestions.len()),
         );
 
         if let Some(head) = option_head {
             let options_start = Instant::now();
             let options = self.source.options_for(&head);
-            profile_duration(
-                "complete.load_options",
-                options_start.elapsed(),
-                format!("head={head} count={}", options.len()),
-            );
+            profile_duration_with("complete.load_options", options_start.elapsed(), || {
+                format!("head={head} count={}", options.len())
+            });
             suggestions.extend(option_suggestions(
                 &options,
                 short_prefix,
@@ -1160,25 +1258,26 @@ impl Completer for WolframCompleter {
             ));
         }
 
-        suggestions.sort_by(|left, right| {
-            completion_sort_key(left, short_prefix)
-                .cmp(&completion_sort_key(right, short_prefix))
-                .then_with(|| left.value.cmp(&right.value))
+        suggestions.sort_by_cached_key(|suggestion| {
+            (
+                completion_sort_key(suggestion, short_prefix),
+                suggestion.value.clone(),
+            )
         });
         suggestions.dedup_by(|left, right| left.value == right.value);
         suggestions.truncate(MAX_COMPLETION_SUGGESTIONS);
         for suggestion in &mut suggestions {
             suggestion.extra = None;
         }
-        profile_duration(
-            "complete.total",
-            complete_start.elapsed(),
+        profile_duration_with("complete.total", complete_start.elapsed(), || {
             format!(
                 "line_len={} pos={pos} prefix={prefix:?} count={}",
                 line.len(),
                 suggestions.len()
-            ),
-        );
+            )
+        });
+        self.source
+            .memoize_suggestions(line, pos, epoch, generation, theme.name(), &suggestions);
         suggestions
     }
 }
@@ -1272,28 +1371,66 @@ pub(crate) fn shell_completion_suggestions_from(
     shell_file_completion_suggestions_from(line, pos, base_dir, home_dir, styles)
 }
 
+/// The shell-escape highlighter asks about the same first word on every
+/// repaint while the user types, and each uncached answer stats every PATH
+/// directory. A short TTL keeps typing free of filesystem calls while still
+/// noticing commands installed mid-session.
+const COMMAND_ON_PATH_TTL: Duration = Duration::from_secs(3);
+static COMMAND_ON_PATH_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (bool, Instant)>>> =
+    std::sync::OnceLock::new();
+
 pub(crate) fn command_is_on_path(command: &str) -> bool {
+    let cache = COMMAND_ON_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let entries = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((exists, checked_at)) = entries.get(command)
+            && checked_at.elapsed() < COMMAND_ON_PATH_TTL
+        {
+            return *exists;
+        }
+    }
+
+    let exists = command_is_on_path_uncached(command);
+    let mut entries = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if entries.len() >= 512 {
+        entries.clear();
+    }
+    entries.insert(command.to_string(), (exists, Instant::now()));
+    exists
+}
+
+fn command_is_on_path_uncached(command: &str) -> bool {
+    if command.is_empty() || command.contains(std::path::MAIN_SEPARATOR) {
+        return false;
+    }
+
     let path = env::var_os("PATH").unwrap_or_default();
     let extensions = path_extensions(env::var_os("PATHEXT").as_deref());
+    env::split_paths(&path).any(|directory| command_exists_in(&directory, command, &extensions))
+}
 
-    env::split_paths(&path).any(|directory| {
-        fs::read_dir(directory).is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
-                command_name_for_path(&entry.path(), &extensions)
-                    .is_some_and(|name| path_command_names_equal(&name, command))
-            })
-        })
-    })
+#[cfg(unix)]
+fn command_exists_in(directory: &Path, command: &str, _extensions: &[String]) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(directory.join(command))
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(windows)]
-fn path_command_names_equal(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right)
+fn command_exists_in(directory: &Path, command: &str, extensions: &[String]) -> bool {
+    extensions
+        .iter()
+        .any(|extension| directory.join(format!("{command}{extension}")).is_file())
 }
 
-#[cfg(not(windows))]
-fn path_command_names_equal(left: &str, right: &str) -> bool {
-    left == right
+#[cfg(not(any(unix, windows)))]
+fn command_exists_in(directory: &Path, command: &str, extensions: &[String]) -> bool {
+    fs::read_dir(directory).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            command_name_for_path(&entry.path(), extensions).is_some_and(|name| name == command)
+        })
+    })
 }
 
 pub(crate) fn path_command_suggestions_from(

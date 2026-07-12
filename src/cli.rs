@@ -7,7 +7,7 @@ use crate::{
     commands::ConfigMode,
     kernel::{KernelClient, KernelConnection, KernelExit, ScriptInvocation},
     native_wstp::LinkProtocol,
-    repl::run_repl,
+    repl::{ReplFeatures, run_repl},
     theme::{UserConfig, load_user_config},
 };
 
@@ -15,9 +15,9 @@ use crate::{
 #[command(name = "wolfie")]
 #[command(about = "A friendlier CLI interface for the Wolfram Kernel")]
 struct Args {
-    /// Disable Wolfram FrontEnd-backed completions and rendering support.
-    #[arg(long = "no-frontend")]
-    no_frontend: bool,
+    /// Reduce REPL overhead by disabling history, dynamic completion, and background warm-up.
+    #[arg(long = "lightweight")]
+    lightweight: bool,
 
     /// Disable ANSI coloring.
     #[arg(long = "no-color")]
@@ -104,7 +104,7 @@ struct ParsedArgs {
 
 #[derive(Debug)]
 struct EffectiveArgs {
-    no_frontend: bool,
+    lightweight: bool,
     no_color: bool,
     no_welcome: bool,
     no_prompt: bool,
@@ -150,15 +150,19 @@ pub(crate) fn run() -> Result<()> {
             use_color,
         ),
         (None, None) => run_repl(
-            !args.no_frontend,
             use_color,
             !args.no_welcome,
             !args.no_prompt,
             connection,
             config,
             args.config_mode,
-            !args.no_completion_ghost_text,
-            !args.no_completion_menu,
+            ReplFeatures {
+                kernel_warmup: !args.lightweight,
+                dynamic_completion: !args.lightweight,
+                completion_ghost_text: !args.no_completion_ghost_text,
+                completion_menu: !args.no_completion_menu,
+                history: !args.lightweight,
+            },
         ),
         (Some(_), Some(_)) => bail!("use either --eval or a file, not both"),
     };
@@ -305,18 +309,22 @@ fn effective_args(parsed: ParsedArgs, config: UserConfig) -> Result<EffectiveArg
     };
 
     let no_prompt = args.no_prompt || command.no_prompt.unwrap_or(false);
+    let lightweight = args.lightweight || command.lightweight.unwrap_or(false);
 
     Ok(EffectiveArgs {
-        no_frontend: args.no_frontend || command.no_frontend.unwrap_or(false),
+        lightweight,
         no_color: args.no_color || command.no_color.unwrap_or(false),
         no_welcome: no_prompt || args.no_welcome || command.no_welcome.unwrap_or(false),
         no_prompt,
-        no_completion_ghost_text: effective_completion_ghost_text_disabled(
-            args.completion_ghost_text,
-            args.no_completion_ghost_text,
-            &command,
-        ),
-        no_completion_menu: args.no_completion_menu || command.no_completion_menu.unwrap_or(false),
+        no_completion_ghost_text: lightweight
+            || effective_completion_ghost_text_disabled(
+                args.completion_ghost_text,
+                args.no_completion_ghost_text,
+                &command,
+            ),
+        no_completion_menu: lightweight
+            || args.no_completion_menu
+            || command.no_completion_menu.unwrap_or(false),
         eval: args.eval,
         link_connect,
         link_name: if link_connect {
@@ -481,6 +489,25 @@ mod tests {
 
         assert!(args.no_welcome);
         assert!(args.no_prompt);
+    }
+
+    #[test]
+    fn lightweight_is_disabled_by_default() {
+        let args = effective(Args::try_parse_from(["wolfie"]).expect("default args should parse"));
+
+        assert!(!args.lightweight);
+    }
+
+    #[test]
+    fn lightweight_disables_optional_repl_subsystems() {
+        let args = effective(
+            Args::try_parse_from(["wolfie", "--lightweight", "--completion-ghost-text"])
+                .expect("lightweight args should parse"),
+        );
+
+        assert!(args.lightweight);
+        assert!(args.no_completion_ghost_text);
+        assert!(args.no_completion_menu);
     }
 
     #[test]
@@ -765,7 +792,6 @@ mod tests {
             args,
             UserConfig {
                 command: CommandConfig {
-                    no_frontend: Some(true),
                     no_color: Some(true),
                     no_welcome: Some(true),
                     no_prompt: Some(true),
@@ -780,7 +806,6 @@ mod tests {
             },
         );
 
-        assert!(args.no_frontend);
         assert!(args.no_color);
         assert!(args.no_welcome);
         assert!(args.no_prompt);
@@ -799,6 +824,26 @@ mod tests {
             }
             KernelConnection::Launch { .. } => panic!("expected connected kernel mode"),
         }
+    }
+
+    #[test]
+    fn applies_lightweight_from_config() {
+        let args = Args::try_parse_from(["wolfie"]).expect("empty args should parse");
+        let args = effective_with_config(
+            args,
+            UserConfig {
+                command: CommandConfig {
+                    lightweight: Some(true),
+                    completion_ghost_text: Some(true),
+                    ..CommandConfig::default()
+                },
+                ..UserConfig::default()
+            },
+        );
+
+        assert!(args.lightweight);
+        assert!(args.no_completion_ghost_text);
+        assert!(args.no_completion_menu);
     }
 
     #[test]
@@ -827,7 +872,6 @@ mod tests {
             args,
             UserConfig {
                 command: CommandConfig {
-                    no_frontend: Some(true),
                     no_color: Some(true),
                     no_welcome: Some(true),
                     no_prompt: Some(true),
@@ -843,7 +887,6 @@ mod tests {
         );
 
         assert_eq!(args.config_mode, ConfigMode::Ephemeral);
-        assert!(!args.no_frontend);
         assert!(!args.no_color);
         assert!(!args.no_welcome);
         assert!(!args.no_prompt);
@@ -859,7 +902,6 @@ mod tests {
         let config: UserConfig = serde_json::from_str(
             r#"{
               "command": {
-                "no-frontend": true,
                 "no-color": true,
                 "no-welcome": true,
                 "no-prompt": true,
@@ -877,7 +919,6 @@ mod tests {
         )
         .expect("command config should deserialize");
 
-        assert_eq!(config.command.no_frontend, Some(true));
         assert_eq!(config.command.no_color, Some(true));
         assert_eq!(config.command.no_welcome, Some(true));
         assert_eq!(config.command.no_prompt, Some(true));

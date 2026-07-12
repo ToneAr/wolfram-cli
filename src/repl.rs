@@ -4,7 +4,7 @@ use std::{
     process::ExitStatus,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -27,7 +27,6 @@ use crate::{
         HistoryTrigger, WolframPrompt, WolframValidator, completion_edit_mode, completion_menu,
         history_menu, history_path, history_primed_edit_mode,
     },
-    frontend::{FrontEndClient, frontend_status},
     highlighter::WolframHighlighter,
     kernel::{
         KernelClient, KernelConnection, SharedKernel, WolframVersions, kernel_input_prompt,
@@ -39,27 +38,31 @@ use crate::{
     wolfram_syntax::{loaded_context_names, remember_user_symbols},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReplFeatures {
+    pub(crate) kernel_warmup: bool,
+    pub(crate) dynamic_completion: bool,
+    pub(crate) completion_ghost_text: bool,
+    pub(crate) completion_menu: bool,
+    pub(crate) history: bool,
+}
+
 pub(crate) fn run_repl(
-    enable_frontend: bool,
     use_color: bool,
     show_welcome: bool,
     show_prompts: bool,
     connection: KernelConnection,
     config: UserConfig,
     config_mode: ConfigMode,
-    enable_completion_ghost_text: bool,
-    enable_completion_menu: bool,
+    features: ReplFeatures,
 ) -> Result<()> {
-    let history = history_path()?;
     let completion_epoch = Arc::new(AtomicU64::new(0));
+    let shell_prompt_hidden = Arc::new(AtomicBool::new(false));
     let user_symbols = Arc::new(Mutex::new(HashSet::new()));
     let kernel = Arc::new(Mutex::new(KernelClient::with_connection(connection)?));
-    let frontend = if enable_frontend {
-        Some(Arc::new(Mutex::new(FrontEndClient::new())))
-    } else {
-        None
-    };
-    spawn_kernel_warmup(kernel.clone());
+    if features.kernel_warmup {
+        spawn_kernel_warmup(kernel.clone());
+    }
     let theme_registry = match config_mode {
         ConfigMode::User => ThemeRegistry::load(),
         ConfigMode::Ephemeral => ThemeRegistry::builtin_only(),
@@ -73,60 +76,83 @@ pub(crate) fn run_repl(
         let versions = wolfram_versions();
         print_welcome(use_color, &versions, &theme);
     }
-    let completion_source = CompletionSource::new(
-        kernel.clone(),
-        completion_epoch.clone(),
-        user_symbols.clone(),
-    );
-    let symbol_lookup = completion_source.highlighter_lookup();
+    let completion_source = features.dynamic_completion.then(|| {
+        CompletionSource::new(
+            kernel.clone(),
+            completion_epoch.clone(),
+            user_symbols.clone(),
+        )
+    });
+    let symbol_lookup = completion_source
+        .as_ref()
+        .map(CompletionSource::highlighter_lookup);
+    let known_qualified_symbols = completion_source
+        .as_ref()
+        .map(|source| source.known_qualified_symbols.clone());
     let symbol_set = builtin_symbol_set();
     let history_trigger = HistoryTrigger::new();
-    let ghost_completion_selection = (enable_completion_ghost_text && !enable_completion_menu)
+    let completion_menu_enabled = features.dynamic_completion && features.completion_menu;
+    let completion_ghost_text_enabled =
+        features.dynamic_completion && features.completion_ghost_text;
+    let ghost_completion_selection = (completion_ghost_text_enabled && !completion_menu_enabled)
         .then(GhostCompletionSelection::new);
     let mut line_editor = Reedline::create()
         .use_kitty_keyboard_enhancement(true)
         .with_ansi_colors(use_color)
         .with_visual_selection_style(theme.current().styles().visual_selection)
-        .with_history(Box::new(FileBackedHistory::with_file(2000, history)?))
         .with_highlighter(Box::new(WolframHighlighter::new(
             symbol_set,
             user_symbols.clone(),
-            completion_source.known_qualified_symbols.clone(),
+            known_qualified_symbols,
             symbol_lookup.clone(),
             theme.clone(),
+            shell_prompt_hidden.clone(),
         )))
-        .with_completer(Box::new(WolframCompleter::new(
-            completion_source.clone(),
-            theme.clone(),
-        )))
-        .with_menu(ReedlineMenu::HistoryMenu(Box::new(history_menu(
-            theme.clone(),
-        ))))
-        .with_validator(Box::new(WolframValidator))
-        .with_edit_mode(history_primed_edit_mode(
-            completion_edit_mode(enable_completion_menu),
-            history_trigger.clone(),
-            ghost_completion_selection.clone(),
-        ));
-    if enable_completion_ghost_text {
-        line_editor = line_editor.with_hinter(Box::new(WolframCompletionHinter::new(
-            completion_source.clone(),
-            theme.clone(),
-            ghost_completion_selection.unwrap_or_else(GhostCompletionSelection::new),
-        )));
+        .with_validator(Box::new(WolframValidator));
+    if features.history {
+        line_editor = line_editor
+            .with_history(Box::new(FileBackedHistory::with_file(
+                2000,
+                history_path()?,
+            )?))
+            .with_menu(ReedlineMenu::HistoryMenu(Box::new(history_menu(
+                theme.clone(),
+            ))))
+            .with_edit_mode(history_primed_edit_mode(
+                completion_edit_mode(completion_menu_enabled),
+                history_trigger.clone(),
+                ghost_completion_selection.clone(),
+            ));
+    } else {
+        line_editor = line_editor
+            .with_history(Box::new(FileBackedHistory::new(0)?))
+            .with_edit_mode(Box::new(completion_edit_mode(completion_menu_enabled)));
     }
-    if enable_completion_menu {
-        line_editor = line_editor.with_menu(ReedlineMenu::EngineCompleter(Box::new(
-            completion_menu(theme.clone()),
+    if let Some(completion_source) = completion_source.as_ref() {
+        line_editor = line_editor.with_completer(Box::new(WolframCompleter::new(
+            completion_source.clone(),
+            theme.clone(),
         )));
+        if completion_ghost_text_enabled {
+            line_editor = line_editor.with_hinter(Box::new(WolframCompletionHinter::new(
+                completion_source.clone(),
+                theme.clone(),
+                ghost_completion_selection.unwrap_or_else(GhostCompletionSelection::new),
+            )));
+        }
+        if completion_menu_enabled {
+            line_editor = line_editor.with_menu(ReedlineMenu::EngineCompleter(Box::new(
+                completion_menu(theme.clone()),
+            )));
+        }
     }
     loop {
         let prompt = WolframPrompt {
             input_prompt: kernel_input_prompt(&kernel)?.unwrap_or_else(|| "In[1]:= ".to_string()),
             kernel_status: kernel_status(&kernel)?,
-            _frontend_status: frontend_status(frontend.as_ref())?,
             theme: theme.clone(),
             show_prompt: show_prompts,
+            shell_prompt_hidden: shell_prompt_hidden.clone(),
         };
         match line_editor.read_line(&prompt)? {
             Signal::Success(input) => {
@@ -145,8 +171,12 @@ pub(crate) fn run_repl(
                     match execute_repl_command(input, &theme, use_color, config_mode) {
                         CommandAction::Quit => break,
                         CommandAction::OpenHistory => {
-                            history_trigger.arm();
-                            println!("(press any key to open the history browser)");
+                            if features.history {
+                                history_trigger.arm();
+                                println!("(press any key to open the history browser)");
+                            } else {
+                                println!("History is disabled in lightweight mode.");
+                            }
                         }
                         CommandAction::Continue => {}
                     }
@@ -173,9 +203,13 @@ pub(crate) fn run_repl(
                 )?;
                 drop(kernel);
                 remember_user_symbols(input, &user_symbols);
-                completion_epoch.fetch_add(1, Ordering::Relaxed);
-                for context in loaded_context_names(input) {
-                    symbol_lookup.prefetch(&context, Duration::from_millis(50));
+                if features.dynamic_completion {
+                    completion_epoch.fetch_add(1, Ordering::Relaxed);
+                }
+                if let Some(symbol_lookup) = symbol_lookup.as_ref() {
+                    for context in loaded_context_names(input) {
+                        symbol_lookup.prefetch(&context, Duration::from_millis(50));
+                    }
                 }
             }
             Signal::CtrlC => continue,
@@ -291,7 +325,7 @@ fn print_gradient_welcome(versions: &WolframVersions, theme: &ThemeHandle) {
 }
 
 fn print_styled_welcome_details(versions: &WolframVersions, theme: &ThemeHandle) {
-	let styles = theme.current().styles();
+    let styles = theme.current().styles();
     let accent = styles.prompt_left;
     let title = nu_ansi_term::Style::new()
         .bold()

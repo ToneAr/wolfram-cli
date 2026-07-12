@@ -22,7 +22,6 @@ use reedline::{
 
 use crate::{
     completion::GhostCompletionSelection,
-    frontend::FrontEndStatus,
     kernel::KernelStatus,
     theme::{ThemeHandle, ThemeStyles},
     wolfram_syntax::{completion_is_disabled_at_cursor, wolfram_input_is_incomplete},
@@ -34,14 +33,20 @@ pub(crate) const HISTORY_MENU: &str = "history_menu";
 pub(crate) struct WolframPrompt {
     pub(crate) input_prompt: String,
     pub(crate) kernel_status: KernelStatus,
-    pub(crate) _frontend_status: FrontEndStatus,
     pub(crate) theme: ThemeHandle,
     pub(crate) show_prompt: bool,
+    pub(crate) shell_prompt_hidden: Arc<AtomicBool>,
+}
+
+impl WolframPrompt {
+    fn should_render_prompt(&self) -> bool {
+        self.show_prompt && !self.shell_prompt_hidden.load(Ordering::Relaxed)
+    }
 }
 
 impl Prompt for WolframPrompt {
     fn render_prompt_left(&self) -> std::borrow::Cow<'_, str> {
-        if !self.show_prompt {
+        if !self.should_render_prompt() {
             return "".into();
         }
 
@@ -54,17 +59,14 @@ impl Prompt for WolframPrompt {
     }
 
     fn render_prompt_right(&self) -> std::borrow::Cow<'_, str> {
-        if !self.show_prompt {
+        if !self.should_render_prompt() {
             return "".into();
         }
 
         let styles = self.theme.current().styles();
         styles
             .prompt_right_text
-            .paint(format!(
-                "Kernel: {}",       // | FE: {}",
-                self.kernel_status  //, self.frontend_status
-            ))
+            .paint(format!("Kernel: {}", self.kernel_status))
             .to_string()
             .into()
     }
@@ -74,7 +76,7 @@ impl Prompt for WolframPrompt {
     }
 
     fn render_prompt_multiline_indicator(&self) -> std::borrow::Cow<'_, str> {
-        if !self.show_prompt {
+        if !self.should_render_prompt() {
             return "".into();
         }
 

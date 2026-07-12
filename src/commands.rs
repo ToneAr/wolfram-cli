@@ -5,11 +5,11 @@ use std::{
     process::{Command, ExitStatus, Stdio},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::theme::{
-    config_file, load_user_config, print_theme_browser, save_user_config, CommandConfig, Theme,
-    ThemeHandle, ThemeRegistry, UserConfig, CONFIG_SCHEMA_URL,
+    CONFIG_SCHEMA_URL, CommandConfig, Theme, ThemeHandle, ThemeRegistry, UserConfig, config_file,
+    load_user_config, print_theme_browser, save_user_config,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,11 +193,11 @@ fn run_settings_menu(theme: &ThemeHandle, use_color: bool) -> Result<()> {
         match choice.trim().to_ascii_lowercase().as_str() {
             "q" | "quit" | "exit" | "done" => break,
             "1" | "theme" => configure_theme(&mut config, theme, use_color)?,
-            "2" | "no-frontend" | "frontend" => configure_bool(
+            "2" | "lightweight" => configure_bool(
                 &mut config,
-                "no-frontend",
-                "Disable Wolfram FrontEnd-backed completions/rendering",
-                |command| &mut command.no_frontend,
+                "lightweight",
+                "Disable optional background, completion, and history overhead",
+                |command| &mut command.lightweight,
             )?,
             "3" | "no-color" | "color" => configure_bool(
                 &mut config,
@@ -223,44 +223,44 @@ fn run_settings_menu(theme: &ThemeHandle, use_color: bool) -> Result<()> {
                 "Enable inline ghost text completion hints",
                 |command| &mut command.completion_ghost_text,
             )?,
-            "7" | "no-completion-ghost-text" => configure_bool(
+            "no-completion-ghost-text" => configure_bool(
                 &mut config,
                 "no-completion-ghost-text",
                 "Explicitly disable inline ghost text completion hints",
                 |command| &mut command.no_completion_ghost_text,
             )?,
-            "8" | "no-completion-menu" | "menu" => configure_bool(
+            "7" | "no-completion-menu" | "menu" => configure_bool(
                 &mut config,
                 "no-completion-menu",
                 "Disable the popup completion menu",
                 |command| &mut command.no_completion_menu,
             )?,
-            "9" | "linkconnect" => configure_bool(
+            "8" | "linkconnect" => configure_bool(
                 &mut config,
                 "linkconnect",
                 "Connect to an existing WSTP link on startup",
                 |command| &mut command.linkconnect,
             )?,
-            "10" | "linkname" => configure_string(
+            "9" | "linkname" => configure_string(
                 &mut config,
                 "linkname",
                 "WSTP link name to use with linkconnect",
                 |command| &mut command.linkname,
             )?,
-            "11" | "linkprotocol" => configure_link_protocol(&mut config)?,
-            "12" | "linkmode" => configure_string(
+            "10" | "linkprotocol" => configure_link_protocol(&mut config)?,
+            "11" | "linkmode" => configure_string(
                 &mut config,
                 "linkmode",
                 "WSTP link mode for launching or connecting",
                 |command| &mut command.linkmode,
             )?,
-            "13" | "linkoptions" => configure_u32(
+            "12" | "linkoptions" => configure_u32(
                 &mut config,
                 "linkoptions",
                 "WSTP link options integer",
                 |command| &mut command.linkoptions,
             )?,
-            "14" | "linkinit" => configure_bool(
+            "13" | "linkinit" => configure_bool(
                 &mut config,
                 "linkinit",
                 "Initialize linkoptions=4 connected kernels in Wolfie's launch directory",
@@ -291,14 +291,18 @@ fn print_settings_menu(config: &UserConfig, theme: &ThemeHandle) {
     println!();
     println!("{}", underline.paint("Wolfie settings:"));
     println!();
+    let linkoptions = config
+        .command
+        .linkoptions
+        .map_or_else(|| "default".to_string(), |value| value.to_string());
     let options = [
         (
             "1.  theme                 ",
             config.theme.as_deref().unwrap_or(current_theme.name()),
         ),
         (
-            "2.  no-frontend           ",
-            option_label(config.command.no_frontend),
+            "2.  lightweight           ",
+            option_label(config.command.lightweight),
         ),
         (
             "3.  no-color              ",
@@ -333,7 +337,12 @@ fn print_settings_menu(config: &UserConfig, theme: &ThemeHandle) {
             string_label(config.command.linkprotocol.as_deref()),
         ),
         (
-            "11. linkinit              ",
+            "11. linkmode              ",
+            string_label(config.command.linkmode.as_deref()),
+        ),
+        ("12. linkoptions           ", linkoptions.as_str()),
+        (
+            "13. linkinit              ",
             option_label(config.command.linkinit),
         ),
     ];
@@ -369,7 +378,11 @@ fn print_settings_menu(config: &UserConfig, theme: &ThemeHandle) {
     println!("╰{}┴{}╯", option_border, value_border);
     println!();
     println!("Commands:");
-    println!("{} - Edit option number {}", italic.paint("num"), italic.paint("num"));
+    println!(
+        "{} - Edit option number {}",
+        italic.paint("num"),
+        italic.paint("num")
+    );
     println!("e   - Open config file in $EDITOR");
     println!("p   - Print config file path");
     println!("q   - Quit settings editor");

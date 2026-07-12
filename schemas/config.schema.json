@@ -20,14 +20,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "no-frontend": {
-          "description": "Disable Wolfram FrontEnd-backed completions and rendering support.",
+        "lightweight": {
+          "description": "Reduce REPL overhead by disabling history, dynamic completion workers, caches and kernel queries, and background kernel warm-up.",
           "type": "boolean"
         },
-        "no_frontend": {
-          "description": "Alias for no-frontend.",
-          "type": "boolean"
-        },
+
         "no-color": {
           "description": "Disable ANSI coloring.",
           "type": "boolean"
@@ -132,7 +129,7 @@
       "$schema": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
       "theme": "dark",
       "command": {
-        "no-frontend": false,
+        "lightweight": false,
         "no-color": false,
         "no-welcome": false,
         "no-prompt": false,

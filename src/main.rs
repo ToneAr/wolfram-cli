@@ -2,7 +2,6 @@ mod cli;
 mod commands;
 mod completion;
 mod editor;
-mod frontend;
 mod highlighter;
 mod interrupt;
 mod kernel;

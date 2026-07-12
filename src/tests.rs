@@ -1,17 +1,21 @@
 use crate::{
-    commands::*, completion::*, editor::*, highlighter::*, theme::*, wl::*, wolfram_syntax::*,
+    commands::*, completion::*, editor::*, highlighter::*, kernel::KernelStatus, theme::*, wl::*,
+    wolfram_syntax::*,
 };
 use anyhow::Result;
 use crossterm::event::{Event, KeyEvent};
 use reedline::{
-    Completer, EditCommand, EditMode, FileBackedHistory, Hinter, KeyCode, KeyModifiers,
-    ReedlineEvent, ReedlineRawEvent, Span, ValidationResult, Validator,
+    Completer, EditCommand, EditMode, FileBackedHistory, Highlighter, Hinter, KeyCode,
+    KeyModifiers, Prompt, ReedlineEvent, ReedlineRawEvent, Span, ValidationResult, Validator,
 };
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::AtomicU64},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -1644,6 +1648,74 @@ fn highlighter_collapses_command_mode_marker_to_cyan_colon() {
 }
 
 #[test]
+fn shell_escape_prompt_is_active_after_marker() {
+    assert!(!shell_escape_prompt_is_active(":", 1));
+    assert!(shell_escape_prompt_is_active(":!", 2));
+    assert!(shell_escape_prompt_is_active(":!ls", 4));
+    assert!(shell_escape_prompt_is_active("  :!ls", 6));
+    assert!(!shell_escape_prompt_is_active("Print[\":!\"]", 10));
+}
+
+#[test]
+fn wolfram_prompt_is_hidden_while_shell_escape_is_active() {
+    let shell_prompt_hidden = Arc::new(AtomicBool::new(false));
+    let prompt = WolframPrompt {
+        input_prompt: "In[7]:= ".to_string(),
+        kernel_status: KernelStatus::ReadyWstp,
+        theme: ThemeHandle::builtin(Theme::dark()),
+        show_prompt: true,
+        shell_prompt_hidden: shell_prompt_hidden.clone(),
+    };
+
+    assert!(prompt.render_prompt_left().contains("In[7]:="));
+
+    shell_prompt_hidden.store(true, Ordering::Relaxed);
+    assert_eq!(prompt.render_prompt_left(), "");
+    assert_eq!(prompt.render_prompt_right(), "");
+    assert_eq!(prompt.render_prompt_multiline_indicator(), "");
+}
+
+#[test]
+fn highlighter_runs_without_dynamic_completion_lookup() {
+    let highlighter = WolframHighlighter::new(
+        builtin_symbol_set(),
+        test_user_symbols(),
+        None,
+        None,
+        ThemeHandle::builtin(Theme::dark()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let highlighted = highlighter.highlight("UnknownPackage`symbol", 21);
+
+    assert!(!highlighted.buffer.is_empty());
+}
+
+#[test]
+fn highlighter_tracks_shell_escape_prompt_state() {
+    let shell_prompt_hidden = Arc::new(AtomicBool::new(false));
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let highlighter = WolframHighlighter::new(
+        builtin_symbol_set(),
+        test_user_symbols(),
+        Some(source.known_qualified_symbols.clone()),
+        Some(source.highlighter_lookup()),
+        ThemeHandle::builtin(Theme::dark()),
+        shell_prompt_hidden.clone(),
+    );
+
+    highlighter.highlight(":!echo ok", 2);
+    assert!(shell_prompt_hidden.load(Ordering::Relaxed));
+
+    highlighter.highlight("Plot[x]", 7);
+    assert!(!shell_prompt_hidden.load(Ordering::Relaxed));
+}
+
+#[test]
 fn highlighter_uses_shell_styles_only_for_shell_escape() {
     let fragments = highlight_shell_escape_with_command_lookup(
         ":! echo --help \"hello\" # note",
@@ -1913,5 +1985,66 @@ fn highlighter_colors_precise_package_variable_from_completion() {
     assert_eq!(
         style_of_with_known(text, &builtin, &user, Some(&known), "DatabaseLink`$Other"),
         nu_ansi_term::Style::new()
+    );
+}
+
+/// Not a correctness test: measures the per-keystroke hot path (menu +
+/// hinter completion passes plus a highlight) so optimizations can be
+/// compared. Run with:
+/// `cargo test --release typing_hot_path_benchmark -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn typing_hot_path_benchmark() {
+    let user_symbols = test_user_symbols();
+    {
+        let mut symbols = user_symbols
+            .lock()
+            .expect("user symbols lock should be available");
+        for index in 0..50 {
+            symbols.insert(format!("myVariable{index}"));
+        }
+    }
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        user_symbols.clone(),
+    );
+    {
+        let mut known = source
+            .known_qualified_symbols
+            .lock()
+            .expect("known symbols lock should be available");
+        for index in 0..2000 {
+            known.insert(format!("SomePackage`Subcontext`Symbol{index}"));
+        }
+    }
+    let theme = ThemeHandle::builtin(Theme::dark());
+    let mut menu_completer = WolframCompleter::new(source.clone(), theme.clone());
+    let mut hinter_completer = WolframCompleter::new(source.clone(), theme.clone());
+    let highlighter = WolframHighlighter::new(
+        builtin_symbol_set(),
+        user_symbols,
+        Some(source.known_qualified_symbols.clone()),
+        Some(source.highlighter_lookup()),
+        theme,
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let line = "myFunc[alpha_] := ListLinePlot[Table[alpha x, {x, 0, 10}]] + custom`thing";
+    let rounds = 200;
+
+    let started = Instant::now();
+    for _ in 0..rounds {
+        for pos in 1..=line.len() {
+            let _ = menu_completer.complete(&line[..pos], pos);
+            let _ = hinter_completer.complete(&line[..pos], pos);
+            let _ = highlighter.highlight(&line[..pos], pos);
+        }
+    }
+    let elapsed = started.elapsed();
+    let keystrokes = rounds * line.len();
+    println!(
+        "typing hot path: {keystrokes} keystrokes in {elapsed:?} ({:.3} ms/keystroke)",
+        elapsed.as_secs_f64() * 1000.0 / keystrokes as f64
     );
 }

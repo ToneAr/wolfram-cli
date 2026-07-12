@@ -1,6 +1,9 @@
 use std::{
     collections::HashSet,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use nu_ansi_term::{Color, Style};
@@ -15,18 +18,35 @@ use crate::{
 pub(crate) struct WolframHighlighter {
     builtin_symbols: &'static HashSet<String>,
     user_symbols: Arc<Mutex<HashSet<String>>>,
-    known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
-    symbol_lookup: SymbolHighlighterLookup,
+    known_qualified_symbols: Option<Arc<Mutex<HashSet<String>>>>,
+    symbol_lookup: Option<SymbolHighlighterLookup>,
     theme: ThemeHandle,
+    shell_prompt_hidden: Arc<AtomicBool>,
+    snapshot: Mutex<SymbolSnapshot>,
+}
+
+/// Highlighting runs on every repaint, so it must not clone the shared
+/// symbol sets per keystroke. Both sets are insert-only, which makes their
+/// length a complete change detector: the snapshot is rebuilt only when a
+/// set has grown, and `known_symbols` additionally carries the short name of
+/// every qualified symbol so per-word checks are hash lookups instead of
+/// whole-set scans.
+#[derive(Default)]
+struct SymbolSnapshot {
+    user_len: usize,
+    known_len: usize,
+    user_symbols: HashSet<String>,
+    known_symbols: HashSet<String>,
 }
 
 impl WolframHighlighter {
     pub(crate) fn new(
         builtin_symbols: &'static HashSet<String>,
         user_symbols: Arc<Mutex<HashSet<String>>>,
-        known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
-        symbol_lookup: SymbolHighlighterLookup,
+        known_qualified_symbols: Option<Arc<Mutex<HashSet<String>>>>,
+        symbol_lookup: Option<SymbolHighlighterLookup>,
         theme: ThemeHandle,
+        shell_prompt_hidden: Arc<AtomicBool>,
     ) -> Self {
         Self {
             builtin_symbols,
@@ -34,32 +54,74 @@ impl WolframHighlighter {
             known_qualified_symbols,
             symbol_lookup,
             theme,
+            shell_prompt_hidden,
+            snapshot: Mutex::new(SymbolSnapshot::default()),
         }
+    }
+
+    fn refreshed_snapshot(&self) -> std::sync::MutexGuard<'_, SymbolSnapshot> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        {
+            let user_symbols = self
+                .user_symbols
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if user_symbols.len() != snapshot.user_len {
+                snapshot.user_symbols = user_symbols.clone();
+                snapshot.user_len = user_symbols.len();
+            }
+        }
+        if let Some(known_qualified_symbols) = &self.known_qualified_symbols {
+            let known_qualified_symbols = known_qualified_symbols
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if known_qualified_symbols.len() != snapshot.known_len {
+                snapshot.known_symbols = expand_known_symbols(&known_qualified_symbols);
+                snapshot.known_len = known_qualified_symbols.len();
+            }
+        }
+        snapshot
     }
 }
 
 impl Highlighter for WolframHighlighter {
     fn highlight(&self, line: &str, cursor: usize) -> StyledText {
-        let user_symbols = self
-            .user_symbols
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let known_qualified_symbols = self
-            .known_qualified_symbols
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        highlight_wolfram_text_at_cursor(
+        self.shell_prompt_hidden.store(
+            shell_escape_prompt_is_active(line, cursor),
+            Ordering::Relaxed,
+        );
+
+        let snapshot = self.refreshed_snapshot();
+        highlight_with_symbol_snapshot(
             line,
             cursor,
             self.theme.current().styles(),
-            Some(&self.builtin_symbols),
-            Some(&user_symbols),
-            Some(&known_qualified_symbols),
-            Some(&self.symbol_lookup),
+            Some(self.builtin_symbols),
+            Some(&snapshot.user_symbols),
+            self.known_qualified_symbols
+                .is_some()
+                .then_some(&snapshot.known_symbols),
+            self.symbol_lookup.as_ref(),
         )
     }
+}
+
+/// Builds the lookup set `highlight_with_symbol_snapshot` expects: every
+/// qualified symbol plus its short name, so both `Context`Name` and `Name`
+/// spellings resolve with a single `contains` call.
+fn expand_known_symbols(qualified_symbols: &HashSet<String>) -> HashSet<String> {
+    let mut expanded = HashSet::with_capacity(qualified_symbols.len() * 2);
+    for symbol in qualified_symbols {
+        let short = short_symbol_name(symbol);
+        if !short.is_empty() && short != symbol {
+            expanded.insert(short.to_string());
+        }
+        expanded.insert(symbol.clone());
+    }
+    expanded
 }
 
 pub(crate) fn highlight_wolfram_text(
@@ -90,6 +152,31 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
     known_qualified_symbols: Option<&HashSet<String>>,
     symbol_lookup: Option<&SymbolHighlighterLookup>,
 ) -> StyledText {
+    let expanded_known_symbols = known_qualified_symbols.map(expand_known_symbols);
+    highlight_with_symbol_snapshot(
+        line,
+        cursor,
+        styles,
+        builtin_symbols,
+        user_symbols,
+        expanded_known_symbols.as_ref(),
+        symbol_lookup,
+    )
+}
+
+/// Core highlighting pass. `known_symbols` must already contain short names
+/// alongside qualified ones (see `expand_known_symbols`); the reedline
+/// highlighter passes its cached snapshot here directly so no per-keystroke
+/// set copies or scans happen.
+fn highlight_with_symbol_snapshot(
+    line: &str,
+    cursor: usize,
+    styles: ThemeStyles,
+    builtin_symbols: Option<&HashSet<String>>,
+    user_symbols: Option<&HashSet<String>>,
+    known_symbols: Option<&HashSet<String>>,
+    symbol_lookup: Option<&SymbolHighlighterLookup>,
+) -> StyledText {
     if let Some(shell_escape_start) = shell_escape_start(line)
         && shell_escape_is_active(line, cursor, shell_escape_start)
     {
@@ -101,6 +188,7 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
     }
 
     let mut out = StyledText::new();
+    let mut plain = String::new();
     let mut chars = line.char_indices().peekable();
 
     while let Some((idx, ch)) = chars.next() {
@@ -118,6 +206,7 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
                     escaped = false;
                 }
             }
+            flush_plain(&mut out, &mut plain);
             out.push((styles.string, line[start..end].to_string()));
         } else if ch == '(' && chars.peek().is_some_and(|(_, next)| *next == '*') {
             let start = idx;
@@ -128,6 +217,7 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
                     break;
                 }
             }
+            flush_plain(&mut out, &mut plain);
             out.push((styles.comment, line[start..end].to_string()));
         } else if ch.is_ascii_digit() {
             let start = idx;
@@ -140,6 +230,7 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
                     break;
                 }
             }
+            flush_plain(&mut out, &mut plain);
             out.push((styles.number, line[start..end].to_string()));
         } else if is_symbol_start(ch) {
             let start = idx;
@@ -166,13 +257,11 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
                     symbols.contains(short)
                 }
             });
-            let is_known_custom_symbol = known_qualified_symbols.is_some_and(|symbols| {
+            let is_known_custom_symbol = known_symbols.is_some_and(|symbols| {
                 if word.contains('`') {
                     is_non_global_or_internal_symbol(word) && symbols.contains(word)
                 } else {
-                    symbols
-                        .iter()
-                        .any(|symbol| short_symbol_name(symbol) == word)
+                    symbols.contains(word)
                 }
             });
             let style = if is_builtin {
@@ -182,13 +271,23 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
             } else {
                 Style::new()
             };
+            flush_plain(&mut out, &mut plain);
             out.push((style, word.to_string()));
         } else {
-            out.push((Style::new(), ch.to_string()));
+            plain.push(ch);
         }
     }
 
+    flush_plain(&mut out, &mut plain);
     out
+}
+
+/// Consecutive unstyled characters (whitespace, operators, brackets) are
+/// batched into one fragment instead of one heap allocation per character.
+fn flush_plain(out: &mut StyledText, plain: &mut String) {
+    if !plain.is_empty() {
+        out.push((Style::new(), std::mem::take(plain)));
+    }
 }
 
 fn shell_escape_start(line: &str) -> Option<usize> {
@@ -196,6 +295,10 @@ fn shell_escape_start(line: &str) -> Option<usize> {
     trimmed
         .starts_with(":!")
         .then_some(line.len() - trimmed.len())
+}
+
+pub(crate) fn shell_escape_prompt_is_active(line: &str, cursor: usize) -> bool {
+    shell_escape_start(line).is_some_and(|start| shell_escape_is_active(line, cursor, start))
 }
 
 fn shell_escape_is_active(line: &str, cursor: usize, shell_escape_start: usize) -> bool {

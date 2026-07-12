@@ -442,12 +442,9 @@ fn default_config_schema() -> Option<String> {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct CommandConfig {
-    #[serde(
-        rename = "no-frontend",
-        alias = "no_frontend",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) no_frontend: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) lightweight: Option<bool>,
+
     #[serde(
         rename = "no-color",
         alias = "no_color",
@@ -500,7 +497,7 @@ pub(crate) struct CommandConfig {
 
 impl CommandConfig {
     fn is_empty(&self) -> bool {
-        self.no_frontend.is_none()
+        self.lightweight.is_none()
             && self.no_color.is_none()
             && self.no_welcome.is_none()
             && self.no_prompt.is_none()

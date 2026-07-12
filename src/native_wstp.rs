@@ -19,7 +19,7 @@ use wstp::{Link, UrgentMessage, sys};
 use crate::{
     interrupt,
     kernel::{KernelExit, kernel_path},
-    profiler::{profile_duration, profile_event},
+    profiler::{profile_duration, profile_duration_with, profile_event, profile_event_with},
     theme::ThemeHandle,
     wl::{WSTP_EVALUATE_USER_INPUT_WL, wolfram_function_call, wolfram_string_literal},
 };
@@ -347,12 +347,9 @@ impl WstpKernelClient {
             true,
             "WSTP EnterTextPacket evaluation",
         )?;
-        let output_bytes = packet_output_bytes(&packets);
-        profile_duration(
-            "wstp.enter_text.total",
-            start.elapsed(),
-            format!("bytes={output_bytes}"),
-        );
+        profile_duration_with("wstp.enter_text.total", start.elapsed(), || {
+            format!("bytes={}", packet_output_bytes(&packets))
+        });
         Ok(packets)
     }
 
@@ -408,12 +405,9 @@ impl WstpKernelClient {
             false,
             "WSTP EvaluatePacket text evaluation",
         )?;
-        let output_bytes = packet_output_bytes(&packets);
-        profile_duration(
-            "wstp.eval_text.total",
-            start.elapsed(),
-            format!("bytes={output_bytes}"),
-        );
+        profile_duration_with("wstp.eval_text.total", start.elapsed(), || {
+            format!("bytes={}", packet_output_bytes(&packets))
+        });
         Ok(packets)
     }
 
@@ -988,10 +982,7 @@ fn packet_output_bytes(packets: &[KernelPacket]) -> usize {
 }
 
 fn trace_packet(operation: &str, packet: &KernelPacket) {
-    profile_event(format!(
-        "wstp.packet\t{operation}\t{}",
-        packet_summary(packet)
-    ));
+    profile_event_with(|| format!("wstp.packet\t{operation}\t{}", packet_summary(packet)));
 }
 
 fn packet_summary(packet: &KernelPacket) -> String {

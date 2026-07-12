@@ -34,9 +34,15 @@ flowchart TD
     NativeWstp --> WstpLink[WSTP shared-memory link]
     WstpLink --> Kernel[WolframKernel -wstp]
 
-    Reedline --> Completion[completion worker and cache]
+    Reedline --> FeatureGate{Dynamic completion enabled?}
+    FeatureGate -->|standard mode| Completion[completion workers and caches]
     Completion --> KernelShared
+    FeatureGate -->|lightweight mode| LocalHighlight[local syntax highlighting only]
 ```
+
+### Lightweight REPL profile
+
+`wolfie --lightweight` keeps the core REPL and WSTP evaluation path unchanged but does not construct optional resource-intensive subsystems. It skips the background kernel warm-up thread/query, `CompletionSource` and its two workers/three caches, dynamic highlighter queries and context prefetch, and persistent/in-memory history retention. The built-in symbol table and local user-symbol tracking remain available for local highlighting. Standard mode retains the existing behavior.
 
 ## Startup and mode selection
 
@@ -87,7 +93,7 @@ flowchart TD
     ExecCandidate -->|no| PathFallback[WolframKernel on PATH]
 ```
 
-The REPL can also hold a `FrontEndClient`, but the current implementation only tracks FrontEnd status (`lazy`, `ready`, `active`, `unavailable`, `disabled`). Evaluation and completion still go through the kernel WSTP session.
+
 
 ## WSTP launch pipeline
 
@@ -374,8 +380,7 @@ Important pieces:
 stateDiagram-v2
     [*] --> Start
     Start --> CreateKernel: KernelClient::new
-    CreateKernel --> CreateFrontend: optional FrontEndClient
-    CreateFrontend --> Warmup: spawn query_string("Null")
+    CreateKernel --> Warmup: spawn query_string("Null")
     Warmup --> PromptLoop
 
     PromptLoop --> ReadLine: reedline.read_line

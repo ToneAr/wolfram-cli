@@ -61,6 +61,14 @@ wolfie --no-welcome
 wolfie --no-prompt
 ```
 
+For underpowered or memory-constrained servers, use the opt-in lightweight REPL profile:
+
+```sh
+wolfie --lightweight
+```
+
+This preserves evaluation, prompts, themes, syntax validation, highlighting, shell escapes, and REPL commands while disabling persistent history, dynamic kernel-backed completion workers/caches/queries, and background kernel warm-up. Normal `wolfie` behavior is unchanged when the flag is absent. The profile can also be saved as `"lightweight": true` under `command` in `config.json`.
+
 Evaluate one expression and exit:
 
 ```sh
@@ -182,7 +190,7 @@ wolfie --completion-ghost-text
 wolfie --no-completion-menu
 ```
 
-The same defaults can be set in `config.json` under `command` with `completion-ghost-text` and `no-completion-menu`. The legacy `no-completion-ghost-text` key is still accepted for disabling a previously enabled ghost-text default.
+The same defaults can be set in `config.json` under `command` with `completion-ghost-text` and `no-completion-menu`. The legacy `no-completion-ghost-text` key is still accepted for disabling a previously enabled ghost-text default. `--no-completion-menu` only hides the popup; use `--lightweight` when the completion workers, caches, highlighting queries, and kernel completion traffic must also be disabled.
 
 ## Commands
 
@@ -219,7 +227,7 @@ While typing a `:!` command, Wolfie uses shell-oriented highlighting and offers 
 
 Theme selections made with `:theme`, `:theme {name}`, or the `:setting` / `:config` menu are persisted to the user config file and restored the next time the REPL starts.
 
-The settings menu can also save CLI defaults such as prompts, completion UI, colors, FrontEnd use, and WSTP link options. Explicit command-line flags override these defaults where the CLI has a value to override. To ignore the saved config and use fresh in-memory defaults for only the current session, start Wolfie with `--skip-config`:
+The settings menu can also save CLI defaults such as prompts, completion UI, colors, lightweight mode, and WSTP link options. Explicit command-line flags override these defaults where the CLI has a value to override. To ignore the saved config and use fresh in-memory defaults for only the current session, start Wolfie with `--skip-config`:
 
 ```sh
 wolfie --skip-config
@@ -230,7 +238,7 @@ wolfie --skip-config
 	"$schema": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
 	"theme": "dark",
 	"command": {
-		"no-frontend": false,
+		"lightweight": false,
 		"no-color": false,
 		"no-welcome": false,
 		"no-prompt": false,
@@ -247,7 +255,7 @@ wolfie --skip-config
 }
 ```
 
-The JSON schema for this file is available at [`schemas/config.schema.json`](schemas/config.schema.json).
+The JSON schema for this file is available at [`schemas/config.schema.json`](schemas/config.schema.json). In lightweight mode, the history path is not created or read and `:history` reports that history is disabled.
 
 `linkprotocol` accepts `SharedMemory`, `TCPIP`, or `IntraProcess`. `linkmode` and `linkoptions` are passed to the WSTP link when connecting to an existing kernel, and to the launched kernel command when `wolfie` starts the kernel. With `--linkconnect --linkoptions 4`, `--linkinit` initializes the connected kernel by setting its current directory to the directory where `wolfie` was launched. For config-based link connections, set `"linkinit": true`; `"linkconnect": true` alone does not enable directory initialization.
 
@@ -295,7 +303,7 @@ Colors can be ANSI indexes (`208`), RGB arrays (`[255, 128, 0]`), hex strings (`
 
 Set `WOLFRAM_KERNEL` to override the kernel executable. Without that override, the CLI asks `wolframscript -showkernels` for the best local kernel path, falls back to `wolfram-app-discovery`, and prefers the native kernel binary under `SystemFiles/Kernel/Binaries` before falling back to `WolframKernel` on `PATH`.
 
-Set `WOLFRAM_FRONTEND` to override the FrontEnd executable used for FrontEnd-backed completions and rendering support.
+
 
 ## Kernel during build
 
