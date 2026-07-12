@@ -361,8 +361,28 @@ fn colon_key_opens_command_completion_menu() {
     }
 }
 
+#[test]
+fn paste_inserts_text_in_one_edit_without_opening_completion() {
+    let mut edit_mode = history_primed_edit_mode(completion_edit_mode(), HistoryTrigger::new());
+    let event = raw_paste("Plot[Sin[x], {x, 0, 1}]\r\nN[%]");
+
+    assert_eq!(
+        edit_mode.parse_event(event),
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Esc,
+            ReedlineEvent::Edit(vec![EditCommand::InsertString(
+                "Plot[Sin[x], {x, 0, 1}]\nN[%]".to_string()
+            )]),
+        ])
+    );
+}
+
 fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> ReedlineRawEvent {
     ReedlineRawEvent::convert_from(Event::Key(KeyEvent::new(code, modifiers))).unwrap()
+}
+
+fn raw_paste(body: &str) -> ReedlineRawEvent {
+    ReedlineRawEvent::convert_from(Event::Paste(body.to_string())).unwrap()
 }
 
 #[test]
@@ -657,6 +677,42 @@ fn filesystem_completion_expands_home_paths_inside_strings() {
         .collect::<Vec<_>>();
 
     assert_eq!(values, vec!["~/Documents/", "~/Downloads.txt"]);
+}
+
+#[test]
+fn shell_escape_completion_uses_file_paths_for_path_like_arguments() {
+    let root = temp_completion_dir();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("sample.wls"), "").unwrap();
+    fs::write(root.join("scratch.txt"), "").unwrap();
+
+    let line = ":!ls ./s";
+    let suggestions =
+        shell_file_completion_suggestions_from(line, line.len(), &root, None, test_styles());
+    let values = suggestions
+        .iter()
+        .map(|suggestion| suggestion.value.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(values, vec!["./src/", "./sample.wls", "./scratch.txt"]);
+    assert_eq!(suggestions[0].span.start, 5);
+    assert_eq!(suggestions[0].span.end, line.len());
+    assert_eq!(
+        suggestions[0].style,
+        Some(test_styles().completion_directory)
+    );
+    assert_eq!(suggestions[1].style, Some(test_styles().completion_file));
+}
+
+#[test]
+fn shell_escape_completion_ignores_non_path_arguments() {
+    let root = temp_completion_dir();
+    fs::write(root.join("sample.wls"), "").unwrap();
+
+    assert!(
+        shell_file_completion_suggestions_from(":!echo sam", 10, &root, None, test_styles())
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1364,12 +1420,50 @@ fn style_of_with_known(
         .unwrap_or_else(|| panic!("word {word:?} not found in highlighted output for {text:?}"))
 }
 
+fn highlighted_fragments(text: &str) -> Vec<(nu_ansi_term::Style, String)> {
+    highlight_wolfram_text(text, test_styles(), None, None, None, None).buffer
+}
+
 #[test]
 fn highlighter_colors_builtin_symbols() {
     let builtin: HashSet<String> = ["Plot".to_string()].into_iter().collect();
     let user: HashSet<String> = HashSet::new();
     let style = style_of("Plot[x]", &builtin, &user, "Plot");
     assert_eq!(style, test_styles().builtin_symbol);
+}
+
+#[test]
+fn highlighter_collapses_command_mode_marker_to_cyan_colon() {
+    assert_eq!(
+        highlighted_fragments(":help Plot"),
+        vec![
+            (
+                nu_ansi_term::Style::new().fg(nu_ansi_term::Color::Cyan),
+                ":".to_string()
+            ),
+            (nu_ansi_term::Style::new(), "help Plot".to_string())
+        ]
+    );
+}
+
+#[test]
+fn highlighter_uses_shell_styles_only_for_shell_escape() {
+    let fragments = highlighted_fragments(":! echo --help \"hello\" # note");
+
+    assert!(
+        fragments.contains(&(
+            nu_ansi_term::Style::new()
+                .fg(nu_ansi_term::Color::Red)
+                .bold(),
+            "!".to_string()
+        ))
+    );
+    assert!(!fragments.iter().any(|(_, fragment)| fragment == ":!"));
+    assert!(!fragments.iter().any(|(_, fragment)| fragment == ":"));
+    assert!(fragments.contains(&(test_styles().completion_command, "echo".to_string())));
+    assert!(fragments.contains(&(test_styles().completion_option, "--help".to_string())));
+    assert!(fragments.contains(&(test_styles().string, "\"hello\"".to_string())));
+    assert!(fragments.contains(&(test_styles().comment, "# note".to_string())));
 }
 
 #[test]

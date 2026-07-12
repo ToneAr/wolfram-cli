@@ -1047,8 +1047,76 @@ pub(crate) fn file_completion_suggestions_from(
         return Vec::new();
     };
     let fragment = unescape_wolfram_string_fragment(raw_fragment);
+    path_completion_suggestions_from(
+        &fragment,
+        context.start,
+        context.end,
+        base_dir,
+        home_dir,
+        styles,
+        escape_wolfram_string_fragment,
+    )
+}
+
+pub(crate) fn shell_file_completion_suggestions(
+    line: &str,
+    pos: usize,
+    styles: ThemeStyles,
+) -> Vec<Suggestion> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home = env::var_os("HOME").map(PathBuf::from);
+    shell_file_completion_suggestions_from(line, pos, &cwd, home.as_deref(), styles)
+}
+
+pub(crate) fn shell_file_completion_suggestions_from(
+    line: &str,
+    pos: usize,
+    base_dir: &Path,
+    home_dir: Option<&Path>,
+    styles: ThemeStyles,
+) -> Vec<Suggestion> {
+    if pos > line.len() {
+        return Vec::new();
+    }
+
+    let before_cursor = &line[..pos];
+    if !before_cursor.starts_with(":!") {
+        return Vec::new();
+    }
+
+    let start = before_cursor
+        .rfind(char::is_whitespace)
+        .map_or(2, |idx| idx + 1)
+        .max(2);
+    let Some(fragment) = before_cursor.get(start..pos) else {
+        return Vec::new();
+    };
+    if !fragment.contains('/') {
+        return Vec::new();
+    }
+
+    path_completion_suggestions_from(
+        fragment,
+        start,
+        pos,
+        base_dir,
+        home_dir,
+        styles,
+        str::to_string,
+    )
+}
+
+fn path_completion_suggestions_from(
+    fragment: &str,
+    start: usize,
+    end: usize,
+    base_dir: &Path,
+    home_dir: Option<&Path>,
+    styles: ThemeStyles,
+    format_value: impl Fn(&str) -> String,
+) -> Vec<Suggestion> {
     let Some((query_dir, replacement_prefix, entry_prefix)) =
-        file_completion_query_parts(&fragment, base_dir, home_dir)
+        file_completion_query_parts(fragment, base_dir, home_dir)
     else {
         return Vec::new();
     };
@@ -1087,7 +1155,7 @@ pub(crate) fn file_completion_suggestions_from(
                 if is_dir { "/" } else { "" }
             );
             Suggestion {
-                value: escape_wolfram_string_fragment(&completed),
+                value: format_value(&completed),
                 description: Some(if is_dir { "directory" } else { "file" }.to_string()),
                 style: Some(if is_dir {
                     styles.completion_directory
@@ -1095,10 +1163,7 @@ pub(crate) fn file_completion_suggestions_from(
                     styles.completion_file
                 }),
                 extra: None,
-                span: Span {
-                    start: context.start,
-                    end: context.end,
-                },
+                span: Span { start, end },
                 append_whitespace: false,
             }
         })
@@ -1177,6 +1242,10 @@ pub(crate) fn command_completion_suggestions(
     }
 
     let before_cursor = &line[..pos];
+    if before_cursor.starts_with(":!") {
+        return Some(shell_file_completion_suggestions(line, pos, styles));
+    }
+
     let command_line = &before_cursor[1..];
     let command_start = command_line
         .find(|ch: char| !ch.is_whitespace())

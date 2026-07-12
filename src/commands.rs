@@ -2,7 +2,7 @@ use std::{
     env, fs,
     io::{self, Write},
     path::Path,
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
@@ -129,6 +129,12 @@ pub(crate) fn execute_repl_command(
     }
 }
 
+pub(crate) fn execute_shell_escape(command: &str) {
+    if let Err(err) = run_shell_escape(command) {
+        println!("Could not run shell command: {err:#}");
+    }
+}
+
 fn print_command_help(theme: Theme, registry: &ThemeRegistry) {
     println!("Commands:");
     println!("  :clear                Clear the console.");
@@ -138,6 +144,9 @@ fn print_command_help(theme: Theme, registry: &ThemeRegistry) {
     println!("  :history | :hist      Open the history browser.");
     println!("                        Press a key to search/navigate.");
     println!("                        Can also be opened using CTRL+r");
+    println!(
+        "  :!{{command}}           Run a command in your shell with inherited stdin/stdout/stderr."
+    );
     println!(
         "  :theme                Cycle theme. Current: {}.",
         theme.name()
@@ -157,6 +166,88 @@ fn set_theme(theme: &ThemeHandle, next: Theme) {
         Ok(()) => println!("Theme: {name}"),
         Err(err) => println!("Theme: {name} (warning: could not save preference: {err:#})"),
     }
+}
+
+pub(crate) fn run_shell_escape(command: &str) -> Result<ExitStatus> {
+    shell_escape_command(command)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("failed to launch shell")
+}
+
+pub(crate) fn top_level_run_command(input: &str) -> Option<String> {
+    let mut rest = input.trim();
+    rest = rest.strip_prefix("System`").unwrap_or(rest);
+    rest = rest.strip_prefix("Run")?.trim_start();
+    rest = rest.strip_prefix('[')?.trim_start();
+    let (command, after_command) = parse_wolfram_string_literal(rest)?;
+    let after_command = after_command.trim_start();
+    after_command
+        .strip_prefix(']')?
+        .trim()
+        .is_empty()
+        .then_some(command)
+}
+
+fn parse_wolfram_string_literal(input: &str) -> Option<(String, &str)> {
+    let mut chars = input.char_indices();
+    let (_, opening) = chars.next()?;
+    if opening != '"' {
+        return None;
+    }
+
+    let mut value = String::new();
+    let mut escaped = false;
+    for (idx, ch) in chars {
+        if escaped {
+            match ch {
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                other => value.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some((value, &input[idx + ch.len_utf8()..])),
+            other => value.push(other),
+        }
+    }
+
+    None
+}
+
+#[cfg(unix)]
+fn shell_escape_command(command: &str) -> Command {
+    let shell = env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "sh".into());
+    let mut child = Command::new(shell);
+    if command.trim().is_empty() {
+        child.arg("-i");
+    } else {
+        child.arg("-c").arg(command);
+    }
+    child
+}
+
+#[cfg(windows)]
+fn shell_escape_command(command: &str) -> Command {
+    let shell = env::var_os("COMSPEC")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "cmd.exe".into());
+    let mut child = Command::new(shell);
+    if !command.trim().is_empty() {
+        child.arg("/C").arg(command);
+    }
+    child
 }
 
 fn edit_config_file() -> Result<()> {
@@ -314,5 +405,29 @@ mod tests {
         );
 
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_top_level_run_string_for_shell_override() {
+        assert_eq!(
+            top_level_run_command(r#"Run["echo hello"]"#),
+            Some("echo hello".to_string())
+        );
+        assert_eq!(
+            top_level_run_command(r#"  System`Run["printf \"hi\""]  "#),
+            Some("printf \"hi\"".to_string())
+        );
+        assert_eq!(
+            top_level_run_command(r#"Run["printf a\nb"]"#),
+            Some("printf a\nb".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_non_top_level_or_dynamic_run_inputs() {
+        assert_eq!(top_level_run_command(r#"Run[cmd]"#), None);
+        assert_eq!(top_level_run_command(r#"1 + Run["true"]"#), None);
+        assert_eq!(top_level_run_command(r#"Run["true"] + 1"#), None);
+        assert_eq!(top_level_run_command(r#"RunProcess[{"echo", "hi"}]"#), None);
     }
 }

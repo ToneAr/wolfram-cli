@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use nu_ansi_term::Style;
+use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 
 use crate::{
@@ -69,6 +69,14 @@ pub(crate) fn highlight_wolfram_text(
     known_qualified_symbols: Option<&HashSet<String>>,
     symbol_lookup: Option<&SymbolHighlighterLookup>,
 ) -> StyledText {
+    if let Some(shell_escape_start) = shell_escape_start(line) {
+        return highlight_shell_escape(line, styles, shell_escape_start);
+    }
+
+    if let Some(command_start) = repl_command_start(line) {
+        return highlight_repl_command(line, command_start);
+    }
+
     let mut out = StyledText::new();
     let mut chars = line.char_indices().peekable();
 
@@ -152,6 +160,98 @@ pub(crate) fn highlight_wolfram_text(
                 Style::new()
             };
             out.push((style, word.to_string()));
+        } else {
+            out.push((Style::new(), ch.to_string()));
+        }
+    }
+
+    out
+}
+
+fn shell_escape_start(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    trimmed
+        .starts_with(":!")
+        .then_some(line.len() - trimmed.len())
+}
+
+fn repl_command_start(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    trimmed
+        .starts_with(':')
+        .then_some(line.len() - trimmed.len())
+}
+
+fn highlight_repl_command(line: &str, command_start: usize) -> StyledText {
+    let mut out = StyledText::new();
+    if command_start > 0 {
+        out.push((Style::new(), line[..command_start].to_string()));
+    }
+    out.push((Style::new().fg(Color::Cyan), ":".to_string()));
+    let command_text_start = command_start + 1;
+    if command_text_start < line.len() {
+        out.push((Style::new(), line[command_text_start..].to_string()));
+    }
+    out
+}
+
+fn highlight_shell_escape(
+    line: &str,
+    styles: ThemeStyles,
+    shell_escape_start: usize,
+) -> StyledText {
+    let mut out = StyledText::new();
+    if shell_escape_start > 0 {
+        out.push((Style::new(), line[..shell_escape_start].to_string()));
+    }
+    out.push((Style::new().fg(Color::Red).bold(), "!".to_string()));
+
+    let command_start = shell_escape_start + 2;
+    let command = &line[command_start..];
+    let first_word_start = command
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(idx, _)| idx);
+    let mut highlighted_command = false;
+    let mut chars = command.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '\'' || ch == '"' {
+            let start = idx;
+            let quote = ch;
+            let mut end = idx + ch.len_utf8();
+            let mut escaped = false;
+            for (next_idx, next) in chars.by_ref() {
+                end = next_idx + next.len_utf8();
+                if next == quote && !escaped {
+                    break;
+                }
+                escaped = next == '\\' && !escaped;
+                if next != '\\' {
+                    escaped = false;
+                }
+            }
+            out.push((styles.string, command[start..end].to_string()));
+        } else if ch == '#' {
+            out.push((styles.comment, command[idx..].to_string()));
+            break;
+        } else if !ch.is_whitespace() && (Some(idx) == first_word_start || ch == '-') {
+            let start = idx;
+            let mut end = idx + ch.len_utf8();
+            while let Some((next_idx, next)) = chars.peek().copied() {
+                if next.is_whitespace() || matches!(next, '\'' | '"' | '#') {
+                    break;
+                }
+                chars.next();
+                end = next_idx + next.len_utf8();
+            }
+            let style = if Some(start) == first_word_start && !highlighted_command {
+                highlighted_command = true;
+                styles.completion_command
+            } else {
+                styles.completion_option
+            };
+            out.push((style, command[start..end].to_string()));
         } else {
             out.push((Style::new(), ch.to_string()));
         }

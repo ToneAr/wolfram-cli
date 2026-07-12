@@ -173,6 +173,7 @@ Lines that start with `:` are handled by the CLI instead of being evaluated as W
 | :config edit  | Open config file in `$EDITOR` |
 | :help         | Print help message            |
 | :history      | Search command history        |
+| :!{command}   | Run a command in your shell   |
 | :theme        | Cycle current theme           |
 | :theme {name} | Set theme to {name}           |
 | :theme list   | List all theme names          |
@@ -180,6 +181,15 @@ Lines that start with `:` are handled by the CLI instead of being evaluated as W
 | :quit         | Quit the shell                |
 
 Command completions are available only when the line starts with `:`. Wolfram Language completions are disabled for those command lines.
+
+Use `:!` to run an external command through your shell without leaving the REPL. The command inherits the REPL's standard input, output, and error streams:
+
+```sh
+:!ls -la
+:!git status
+```
+
+While typing a `:!` command, Wolfie uses shell-oriented highlighting and offers file and directory completions for path-like arguments.
 
 ## Themes
 

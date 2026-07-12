@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     io::{self, IsTerminal},
+    process::ExitStatus,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -14,7 +15,10 @@ use reedline::{
 };
 
 use crate::{
-    commands::{CommandAction, ConfigMode, execute_repl_command},
+    commands::{
+        CommandAction, ConfigMode, execute_repl_command, execute_shell_escape, run_shell_escape,
+        top_level_run_command,
+    },
     completion::{CompletionSource, WolframCompleter, builtin_symbol_set},
     editor::{
         HistoryTrigger, WolframPrompt, WolframValidator, completion_edit_mode, completion_menu,
@@ -116,6 +120,10 @@ pub(crate) fn run_repl(
                 if matches!(input, "Exit" | "Quit") {
                     break;
                 }
+                if let Some(command) = input.strip_prefix(":!") {
+                    execute_shell_escape(command);
+                    continue;
+                }
                 if input.starts_with(':') {
                     match execute_repl_command(input, &theme, use_color, config_mode) {
                         CommandAction::Quit => break,
@@ -127,6 +135,12 @@ pub(crate) fn run_repl(
                     }
                     continue;
                 }
+                let evaluation_input = if let Some(command) = top_level_run_command(input) {
+                    let status = run_shell_escape(&command)?;
+                    shell_exit_code(status).to_string()
+                } else {
+                    input.to_string()
+                };
                 let (mut kernel, may_be_slow) = lock_kernel_for_repl_input(&kernel)?;
                 if may_be_slow {
                     println!("\n{}: Kernel is starting up", "Wolfie::init");
@@ -135,7 +149,7 @@ pub(crate) fn run_repl(
                     read_kernel_input(&mut line_editor, request, theme.clone(), show_prompts)
                 };
                 kernel.evaluate_repl_input(
-                    input,
+                    &evaluation_input,
                     &theme,
                     &mut kernel_input_handler,
                     show_prompts,
@@ -156,6 +170,10 @@ pub(crate) fn run_repl(
 }
 
 const KERNEL_INIT_WARNING_GRACE: Duration = Duration::from_millis(150);
+
+fn shell_exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
 
 fn lock_kernel_for_repl_input(
     kernel: &SharedKernel,

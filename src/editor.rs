@@ -545,6 +545,9 @@ impl EditMode for HistoryPrimedEditMode {
             self.history_active.set(true);
             return ReedlineEvent::Menu(HISTORY_MENU.to_string());
         }
+        if let Event::Paste(body) = &raw {
+            return paste_insert_event(body);
+        }
         if is_history_open_key(&raw) {
             self.history_active.set(true);
         }
@@ -615,6 +618,17 @@ fn is_history_cancel_key(raw: &Event) -> bool {
             ..
         })
     )
+}
+
+fn paste_insert_event(body: &str) -> ReedlineEvent {
+    ReedlineEvent::Multiple(vec![
+        ReedlineEvent::Esc,
+        ReedlineEvent::Edit(vec![EditCommand::InsertString(normalize_pasted_text(body))]),
+    ])
+}
+
+fn normalize_pasted_text(body: &str) -> String {
+    body.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn plain_char_insert(raw: &Event) -> Option<ReedlineEvent> {
