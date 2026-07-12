@@ -31,6 +31,21 @@ struct Args {
     #[arg(long = "no-prompt")]
     no_prompt: bool,
 
+    /// Enable inline ghost text completion hints.
+    #[arg(
+        long = "completion-ghost-text",
+        conflicts_with = "no_completion_ghost_text"
+    )]
+    completion_ghost_text: bool,
+
+    /// Disable inline ghost text completion hints.
+    #[arg(long = "no-completion-ghost-text")]
+    no_completion_ghost_text: bool,
+
+    /// Disable the popup completion menu.
+    #[arg(long = "no-completion-menu")]
+    no_completion_menu: bool,
+
     /// Ignore user config and use fresh in-memory defaults for this session.
     #[arg(long = "skip-config")]
     skip_config: bool,
@@ -93,6 +108,8 @@ struct EffectiveArgs {
     no_color: bool,
     no_welcome: bool,
     no_prompt: bool,
+    no_completion_ghost_text: bool,
+    no_completion_menu: bool,
     config_mode: ConfigMode,
     eval: Option<String>,
     link_connect: bool,
@@ -140,6 +157,8 @@ pub(crate) fn run() -> Result<()> {
             connection,
             config,
             args.config_mode,
+            !args.no_completion_ghost_text,
+            !args.no_completion_menu,
         ),
         (Some(_), Some(_)) => bail!("use either --eval or a file, not both"),
     };
@@ -218,6 +237,27 @@ fn value_option_consumes_next_arg(arg: &str) -> bool {
     )
 }
 
+fn effective_completion_ghost_text_disabled(
+    cli_enable: bool,
+    cli_disable: bool,
+    command: &crate::theme::CommandConfig,
+) -> bool {
+    if cli_enable {
+        return false;
+    }
+    if cli_disable {
+        return true;
+    }
+    if let Some(enabled) = command.completion_ghost_text {
+        return !enabled;
+    }
+    if let Some(disabled) = command.no_completion_ghost_text {
+        return disabled;
+    }
+
+    true
+}
+
 fn effective_args(parsed: ParsedArgs, config: UserConfig) -> Result<EffectiveArgs> {
     let ParsedArgs {
         args,
@@ -271,6 +311,12 @@ fn effective_args(parsed: ParsedArgs, config: UserConfig) -> Result<EffectiveArg
         no_color: args.no_color || command.no_color.unwrap_or(false),
         no_welcome: no_prompt || args.no_welcome || command.no_welcome.unwrap_or(false),
         no_prompt,
+        no_completion_ghost_text: effective_completion_ghost_text_disabled(
+            args.completion_ghost_text,
+            args.no_completion_ghost_text,
+            &command,
+        ),
+        no_completion_menu: args.no_completion_menu || command.no_completion_menu.unwrap_or(false),
         eval: args.eval,
         link_connect,
         link_name: if link_connect {
@@ -435,6 +481,33 @@ mod tests {
 
         assert!(args.no_welcome);
         assert!(args.no_prompt);
+    }
+
+    #[test]
+    fn completion_ghost_text_is_disabled_by_default() {
+        let args = effective(Args::try_parse_from(["wolfie"]).expect("default args should parse"));
+
+        assert!(args.no_completion_ghost_text);
+    }
+
+    #[test]
+    fn parses_completion_ui_flags() {
+        let args =
+            Args::try_parse_from(["wolfie", "--completion-ghost-text", "--no-completion-menu"])
+                .expect("completion UI flags should parse");
+        let args = effective(args);
+
+        assert!(!args.no_completion_ghost_text);
+        assert!(args.no_completion_menu);
+    }
+
+    #[test]
+    fn no_completion_ghost_text_flag_disables_ghost_text() {
+        let args = Args::try_parse_from(["wolfie", "--no-completion-ghost-text"])
+            .expect("completion UI flags should parse");
+        let args = effective(args);
+
+        assert!(args.no_completion_ghost_text);
     }
 
     #[test]
@@ -696,6 +769,8 @@ mod tests {
                     no_color: Some(true),
                     no_welcome: Some(true),
                     no_prompt: Some(true),
+                    no_completion_ghost_text: Some(true),
+                    no_completion_menu: Some(true),
                     linkconnect: Some(true),
                     linkname: Some("config-link".to_string()),
                     linkprotocol: Some("TCPIP".to_string()),
@@ -709,6 +784,8 @@ mod tests {
         assert!(args.no_color);
         assert!(args.no_welcome);
         assert!(args.no_prompt);
+        assert!(args.no_completion_ghost_text);
+        assert!(args.no_completion_menu);
         let connection = connection(&args).expect("config defaults should be valid");
 
         match connection {
@@ -754,6 +831,8 @@ mod tests {
                     no_color: Some(true),
                     no_welcome: Some(true),
                     no_prompt: Some(true),
+                    no_completion_ghost_text: Some(true),
+                    no_completion_menu: Some(true),
                     linkconnect: Some(true),
                     linkname: Some("config-link".to_string()),
                     linkprotocol: Some("TCPIP".to_string()),
@@ -768,6 +847,8 @@ mod tests {
         assert!(!args.no_color);
         assert!(!args.no_welcome);
         assert!(!args.no_prompt);
+        assert!(args.no_completion_ghost_text);
+        assert!(!args.no_completion_menu);
         assert!(!args.link_connect);
         let connection = connection(&args).expect("default args should launch a kernel");
         assert!(matches!(connection, KernelConnection::Launch { .. }));
@@ -782,6 +863,9 @@ mod tests {
                 "no-color": true,
                 "no-welcome": true,
                 "no-prompt": true,
+                "completion-ghost-text": true,
+                "no-completion-ghost-text": true,
+                "no-completion-menu": true,
                 "linkconnect": true,
                 "linkname": "config-link",
                 "linkprotocol": "SharedMemory",
@@ -797,6 +881,9 @@ mod tests {
         assert_eq!(config.command.no_color, Some(true));
         assert_eq!(config.command.no_welcome, Some(true));
         assert_eq!(config.command.no_prompt, Some(true));
+        assert_eq!(config.command.completion_ghost_text, Some(true));
+        assert_eq!(config.command.no_completion_ghost_text, Some(true));
+        assert_eq!(config.command.no_completion_menu, Some(true));
         assert_eq!(config.command.linkconnect, Some(true));
         assert_eq!(config.command.linkname.as_deref(), Some("config-link"));
         assert_eq!(config.command.linkprotocol.as_deref(), Some("SharedMemory"));

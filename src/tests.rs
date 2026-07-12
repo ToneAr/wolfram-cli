@@ -4,8 +4,8 @@ use crate::{
 use anyhow::Result;
 use crossterm::event::{Event, KeyEvent};
 use reedline::{
-    Completer, EditCommand, EditMode, KeyCode, KeyModifiers, ReedlineEvent, ReedlineRawEvent,
-    ValidationResult, Validator,
+    Completer, EditCommand, EditMode, FileBackedHistory, Hinter, KeyCode, KeyModifiers,
+    ReedlineEvent, ReedlineRawEvent, Span, ValidationResult, Validator,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -89,6 +89,17 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
     }
 }
 
+fn test_suggestion(value: &str, start: usize, end: usize) -> reedline::Suggestion {
+    reedline::Suggestion {
+        value: value.to_string(),
+        description: None,
+        style: None,
+        extra: None,
+        span: Span { start, end },
+        append_whitespace: false,
+    }
+}
+
 fn temp_completion_dir() -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -106,6 +117,88 @@ fn temp_completion_dir() -> PathBuf {
         }
     }
     panic!("failed to create a unique temporary completion directory")
+}
+
+#[test]
+fn completion_hint_suffix_uses_only_untyped_remainder() {
+    let line = "PlotR";
+
+    assert_eq!(
+        completion_hint_suffix(
+            line,
+            line.len(),
+            &test_suggestion("PlotRange", 0, line.len())
+        ),
+        Some("ange".to_string())
+    );
+    assert_eq!(
+        completion_hint_suffix(line, 3, &test_suggestion("PlotRange", 0, line.len())),
+        None
+    );
+    assert_eq!(
+        completion_hint_suffix(line, line.len(), &test_suggestion("Range", 0, line.len())),
+        None
+    );
+}
+
+#[test]
+fn down_cycles_ghost_completion_when_menu_is_disabled() {
+    let user_symbols = test_user_symbols();
+    {
+        let mut symbols = user_symbols
+            .lock()
+            .expect("user symbols lock should be available");
+        symbols.insert("zzAlpha".to_string());
+        symbols.insert("zzBeta".to_string());
+    }
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        user_symbols,
+    );
+    let selection = GhostCompletionSelection::new();
+    let mut hinter = WolframCompletionHinter::new(
+        source,
+        ThemeHandle::builtin(Theme::dark()),
+        selection.clone(),
+    );
+    let history = FileBackedHistory::default();
+
+    assert_eq!(hinter.handle("zz", 2, &history, false), "Alpha");
+
+    let mut edit_mode = history_primed_edit_mode(
+        completion_edit_mode(false),
+        HistoryTrigger::new(),
+        Some(selection),
+    );
+    assert_eq!(
+        edit_mode.parse_event(raw_key(KeyCode::Down, KeyModifiers::NONE)),
+        ReedlineEvent::Repaint
+    );
+    assert_eq!(hinter.handle("zz", 2, &history, false), "Beta");
+}
+
+#[test]
+fn parses_symbol_details_batch() {
+    let details = parse_symbol_details_batch(vec![
+        "Plot\tSystem`\tPlot[f, {x, xmin, xmax}] plots f.".to_string(),
+        "LightCyan\tSystem`\t".to_string(),
+    ]);
+
+    assert_eq!(
+        details.get("Plot"),
+        Some(&CompletionItemDetails {
+            context: Some("System`".to_string()),
+            usage: Some("Plot[f, {x, xmin, xmax}] plots f.".to_string()),
+        })
+    );
+    assert_eq!(
+        details.get("LightCyan"),
+        Some(&CompletionItemDetails {
+            context: Some("System`".to_string()),
+            usage: None,
+        })
+    );
 }
 
 #[test]
@@ -299,18 +392,19 @@ fn validates_colon_commands_as_complete_input() {
 }
 
 #[test]
-fn tab_key_opens_or_accepts_completion_without_submitting() {
+fn tab_key_accepts_hint_before_opening_completion_menu() {
     for (code, modifiers) in [
         (KeyCode::Tab, KeyModifiers::NONE),
         (KeyCode::Char('i'), KeyModifiers::CONTROL),
         (KeyCode::Char('\t'), KeyModifiers::NONE),
     ] {
-        let mut edit_mode = completion_edit_mode();
+        let mut edit_mode = completion_edit_mode(true);
         let event = raw_key(code, modifiers);
 
         assert_eq!(
             edit_mode.parse_event(event),
             ReedlineEvent::UntilFound(vec![
+                ReedlineEvent::HistoryHintComplete,
                 ReedlineEvent::Menu("completion_menu".to_string()),
                 ReedlineEvent::Enter,
             ])
@@ -320,7 +414,7 @@ fn tab_key_opens_or_accepts_completion_without_submitting() {
 
 #[test]
 fn shift_enter_inserts_newline_without_submitting() {
-    let mut edit_mode = completion_edit_mode();
+    let mut edit_mode = completion_edit_mode(true);
     let event = raw_key(KeyCode::Enter, KeyModifiers::SHIFT);
 
     assert_eq!(
@@ -335,7 +429,7 @@ fn shift_enter_inserts_newline_without_submitting() {
 #[test]
 fn shift_tab_inserts_literal_tab_character() {
     for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
-        let mut edit_mode = completion_edit_mode();
+        let mut edit_mode = completion_edit_mode(true);
         let event = raw_key(KeyCode::BackTab, modifiers);
 
         assert_eq!(
@@ -348,7 +442,7 @@ fn shift_tab_inserts_literal_tab_character() {
 #[test]
 fn colon_key_opens_command_completion_menu() {
     for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
-        let mut edit_mode = completion_edit_mode();
+        let mut edit_mode = completion_edit_mode(true);
         let event = raw_key(KeyCode::Char(':'), modifiers);
 
         assert_eq!(
@@ -362,8 +456,30 @@ fn colon_key_opens_command_completion_menu() {
 }
 
 #[test]
+fn disabled_completion_menu_does_not_open_popup_bindings() {
+    let mut edit_mode = completion_edit_mode(false);
+
+    assert_eq!(
+        edit_mode.parse_event(raw_key(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+        ReedlineEvent::Edit(vec![EditCommand::InsertChar('P')])
+    );
+    assert_eq!(
+        edit_mode.parse_event(raw_key(KeyCode::Char(':'), KeyModifiers::NONE)),
+        ReedlineEvent::Edit(vec![EditCommand::InsertChar(':')])
+    );
+    assert_eq!(
+        edit_mode.parse_event(raw_key(KeyCode::Tab, KeyModifiers::NONE)),
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintComplete,
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar('\t')]),
+        ])
+    );
+}
+
+#[test]
 fn paste_inserts_text_in_one_edit_without_opening_completion() {
-    let mut edit_mode = history_primed_edit_mode(completion_edit_mode(), HistoryTrigger::new());
+    let mut edit_mode =
+        history_primed_edit_mode(completion_edit_mode(true), HistoryTrigger::new(), None);
     let event = raw_paste("Plot[Sin[x], {x, 0, 1}]\r\nN[%]");
 
     assert_eq!(
@@ -398,10 +514,22 @@ fn parses_repl_commands() {
     );
     assert_eq!(
         parse_repl_command(":config", &registry).unwrap(),
-        ReplCommand::Config(ConfigCommand::Show)
+        ReplCommand::Settings
     );
     assert_eq!(
         parse_repl_command(":conf", &registry).unwrap(),
+        ReplCommand::Settings
+    );
+    assert_eq!(
+        parse_repl_command(":setting", &registry).unwrap(),
+        ReplCommand::Settings
+    );
+    assert_eq!(
+        parse_repl_command(":settings", &registry).unwrap(),
+        ReplCommand::Settings
+    );
+    assert_eq!(
+        parse_repl_command(":config show", &registry).unwrap(),
         ReplCommand::Config(ConfigCommand::Show)
     );
     assert_eq!(
@@ -462,7 +590,8 @@ fn rejects_unknown_or_malformed_repl_commands() {
     assert!(parse_repl_command(":theme neon", &registry).is_err());
     assert!(parse_repl_command(":quit now", &registry).is_err());
     assert!(parse_repl_command(":history now", &registry).is_err());
-    assert!(parse_repl_command(":config show", &registry).is_err());
+    assert!(parse_repl_command(":setting now", &registry).is_err());
+    assert!(parse_repl_command(":config show now", &registry).is_err());
     assert!(parse_repl_command(":config edit now", &registry).is_err());
 }
 
@@ -506,7 +635,7 @@ fn completes_repl_command_names_only_at_line_start() {
     assert_eq!(
         bare_values,
         vec![
-            "clear", "config", "conf", "help", "history", "theme", "quit"
+            "clear", "config", "conf", "help", "history", "setting", "settings", "theme", "quit"
         ]
     );
     assert!(
@@ -677,6 +806,60 @@ fn filesystem_completion_expands_home_paths_inside_strings() {
         .collect::<Vec<_>>();
 
     assert_eq!(values, vec!["~/Documents/", "~/Downloads.txt"]);
+}
+
+#[test]
+fn shell_escape_completion_suggests_path_commands_for_the_first_token() {
+    let root = temp_completion_dir();
+    let command = if cfg!(windows) { "git.exe" } else { "git" };
+    fs::write(root.join(command), "").unwrap();
+    fs::write(
+        root.join(if cfg!(windows) { "gone.cmd" } else { "gone" }),
+        "",
+    )
+    .unwrap();
+    fs::write(root.join("not-a-command.txt"), "").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["git", "gone"] {
+            let path = root.join(name);
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
+    let line = ":!gi";
+    let suggestions = shell_completion_suggestions_from(
+        line,
+        line.len(),
+        &root,
+        None,
+        vec![root.clone()],
+        Some(std::ffi::OsStr::new(".EXE;.CMD")),
+        test_styles(),
+    );
+
+    assert_eq!(
+        suggestions
+            .iter()
+            .map(|suggestion| suggestion.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["git"]
+    );
+    assert_eq!(
+        suggestions[0].span,
+        Span {
+            start: 2,
+            end: line.len()
+        }
+    );
+    assert_eq!(
+        suggestions[0].description.as_deref(),
+        Some("command on PATH")
+    );
 }
 
 #[test]
@@ -1462,7 +1645,13 @@ fn highlighter_collapses_command_mode_marker_to_cyan_colon() {
 
 #[test]
 fn highlighter_uses_shell_styles_only_for_shell_escape() {
-    let fragments = highlighted_fragments(":! echo --help \"hello\" # note");
+    let fragments = highlight_shell_escape_with_command_lookup(
+        ":! echo --help \"hello\" # note",
+        test_styles(),
+        0,
+        |command| command == "echo",
+    )
+    .buffer;
 
     assert!(
         fragments.contains(&(
@@ -1478,6 +1667,30 @@ fn highlighter_uses_shell_styles_only_for_shell_escape() {
     assert!(fragments.contains(&(test_styles().completion_option, "--help".to_string())));
     assert!(fragments.contains(&(test_styles().string, "\"hello\"".to_string())));
     assert!(fragments.contains(&(test_styles().comment, "# note".to_string())));
+}
+
+#[test]
+fn shell_highlighter_colors_only_known_first_token_as_command() {
+    let known = highlight_shell_escape_with_command_lookup(
+        ":! known --flag",
+        test_styles(),
+        0,
+        |command| command == "known",
+    )
+    .buffer;
+    assert!(known.contains(&(test_styles().completion_command, "known".to_string())));
+    assert!(known.contains(&(test_styles().completion_option, "--flag".to_string())));
+
+    let unknown = highlight_shell_escape_with_command_lookup(
+        ":! unknown --flag",
+        test_styles(),
+        0,
+        |command| command == "known",
+    )
+    .buffer;
+    assert!(unknown.contains(&(nu_ansi_term::Style::new(), "unknown".to_string())));
+    assert!(!unknown.contains(&(test_styles().completion_command, "unknown".to_string())));
+    assert!(unknown.contains(&(test_styles().completion_option, "--flag".to_string())));
 }
 
 #[test]

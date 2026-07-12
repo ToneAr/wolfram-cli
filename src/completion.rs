@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, TryLockError,
@@ -12,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use reedline::{Completer, Span, Suggestion};
+use reedline::{Completer, Hinter, History, Span, Suggestion};
 
 use crate::{
     kernel::{SharedKernel, lock_kernel},
@@ -396,6 +398,7 @@ fn process_detail_job(
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct CompletionSource {
     pub(crate) epoch: Arc<AtomicU64>,
     pub(crate) user_symbols: Arc<Mutex<HashSet<String>>>,
@@ -894,6 +897,77 @@ pub(crate) struct WolframCompleter {
     pub(crate) theme: ThemeHandle,
 }
 
+#[derive(Default)]
+pub(crate) struct GhostCompletionSelection {
+    active: bool,
+    pending_delta: isize,
+    selected_index: usize,
+    last_line: String,
+    last_pos: usize,
+}
+
+impl GhostCompletionSelection {
+    pub(crate) fn new() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::default()))
+    }
+
+    pub(crate) fn is_active(selection: &Arc<Mutex<Self>>) -> bool {
+        selection.lock().is_ok_and(|state| state.active)
+    }
+
+    pub(crate) fn select_next(selection: &Arc<Mutex<Self>>) {
+        if let Ok(mut state) = selection.lock() {
+            state.pending_delta += 1;
+        }
+    }
+
+    pub(crate) fn select_previous(selection: &Arc<Mutex<Self>>) {
+        if let Ok(mut state) = selection.lock() {
+            state.pending_delta -= 1;
+        }
+    }
+
+    fn selected_suggestion<'a>(
+        &mut self,
+        line: &str,
+        pos: usize,
+        suggestions: &'a [Suggestion],
+    ) -> Option<&'a Suggestion> {
+        if self.last_line != line || self.last_pos != pos {
+            self.selected_index = 0;
+            self.pending_delta = 0;
+            self.last_line.clear();
+            self.last_line.push_str(line);
+            self.last_pos = pos;
+        }
+
+        if suggestions.is_empty() {
+            self.active = false;
+            self.selected_index = 0;
+            self.pending_delta = 0;
+            return None;
+        }
+
+        if self.pending_delta != 0 {
+            let len = suggestions.len() as isize;
+            let selected = self.selected_index as isize + self.pending_delta;
+            self.selected_index = selected.rem_euclid(len) as usize;
+            self.pending_delta = 0;
+        } else if self.selected_index >= suggestions.len() {
+            self.selected_index = 0;
+        }
+
+        self.active = true;
+        suggestions.get(self.selected_index)
+    }
+}
+
+pub(crate) struct WolframCompletionHinter {
+    completer: WolframCompleter,
+    selection: Arc<Mutex<GhostCompletionSelection>>,
+    current_hint: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CompletionItemDetails {
     pub(crate) context: Option<String>,
@@ -903,6 +977,92 @@ pub(crate) struct CompletionItemDetails {
 impl WolframCompleter {
     pub(crate) fn new(source: CompletionSource, theme: ThemeHandle) -> Self {
         Self { source, theme }
+    }
+}
+
+impl WolframCompletionHinter {
+    pub(crate) fn new(
+        source: CompletionSource,
+        theme: ThemeHandle,
+        selection: Arc<Mutex<GhostCompletionSelection>>,
+    ) -> Self {
+        Self {
+            completer: WolframCompleter::new(source, theme),
+            selection,
+            current_hint: String::new(),
+        }
+    }
+}
+
+impl Hinter for WolframCompletionHinter {
+    fn handle(
+        &mut self,
+        line: &str,
+        pos: usize,
+        _history: &dyn History,
+        use_ansi_coloring: bool,
+    ) -> String {
+        self.current_hint.clear();
+        let suggestions = self.completer.complete(line, pos);
+        let Some(suggestion) = self.selection.lock().ok().and_then(|mut selection| {
+            selection
+                .selected_suggestion(line, pos, &suggestions)
+                .cloned()
+        }) else {
+            return String::new();
+        };
+        let Some(hint) = completion_hint_suffix(line, pos, &suggestion) else {
+            if let Ok(mut selection) = self.selection.lock() {
+                selection.active = false;
+            }
+            return String::new();
+        };
+
+        self.current_hint = hint;
+        if use_ansi_coloring {
+            self.completer
+                .theme
+                .current()
+                .styles()
+                .menu_description
+                .italic()
+                .paint(&self.current_hint)
+                .to_string()
+        } else {
+            self.current_hint.clone()
+        }
+    }
+
+    fn complete_hint(&self) -> String {
+        self.current_hint.clone()
+    }
+
+    fn next_hint_token(&self) -> String {
+        self.current_hint
+            .split_once(char::is_whitespace)
+            .map_or_else(|| self.current_hint.clone(), |(token, _)| token.to_string())
+    }
+}
+
+pub(crate) fn completion_hint_suffix(
+    line: &str,
+    pos: usize,
+    suggestion: &Suggestion,
+) -> Option<String> {
+    if pos != line.len() || suggestion.span.end != pos || suggestion.span.start > pos {
+        return None;
+    }
+
+    let replaced = line.get(suggestion.span.start..pos)?;
+    if replaced.is_empty() || !suggestion.value.starts_with(replaced) {
+        return None;
+    }
+
+    let suffix = suggestion.value.get(replaced.len()..)?;
+    if suffix.is_empty() {
+        None
+    } else {
+        Some(suffix.to_string())
     }
 }
 
@@ -1058,14 +1218,168 @@ pub(crate) fn file_completion_suggestions_from(
     )
 }
 
-pub(crate) fn shell_file_completion_suggestions(
+pub(crate) fn shell_completion_suggestions(
     line: &str,
     pos: usize,
     styles: ThemeStyles,
 ) -> Vec<Suggestion> {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let home = env::var_os("HOME").map(PathBuf::from);
-    shell_file_completion_suggestions_from(line, pos, &cwd, home.as_deref(), styles)
+    let path = env::var_os("PATH").unwrap_or_default();
+    shell_completion_suggestions_from(
+        line,
+        pos,
+        &cwd,
+        home.as_deref(),
+        env::split_paths(&path),
+        env::var_os("PATHEXT").as_deref(),
+        styles,
+    )
+}
+
+pub(crate) fn shell_completion_suggestions_from(
+    line: &str,
+    pos: usize,
+    base_dir: &Path,
+    home_dir: Option<&Path>,
+    path_dirs: impl IntoIterator<Item = PathBuf>,
+    path_ext: Option<&OsStr>,
+    styles: ThemeStyles,
+) -> Vec<Suggestion> {
+    if pos > line.len() || !line[..pos].starts_with(":!") {
+        return Vec::new();
+    }
+
+    let before_cursor = &line[..pos];
+    let command_start = before_cursor[2..]
+        .find(|ch: char| !ch.is_whitespace())
+        .map_or(pos, |idx| idx + 2);
+    let command_end = before_cursor[command_start..]
+        .find(char::is_whitespace)
+        .map_or(pos, |idx| command_start + idx);
+
+    if pos <= command_end {
+        return path_command_suggestions_from(
+            &before_cursor[command_start..pos],
+            command_start,
+            pos,
+            path_dirs,
+            path_ext,
+            styles,
+        );
+    }
+
+    shell_file_completion_suggestions_from(line, pos, base_dir, home_dir, styles)
+}
+
+pub(crate) fn command_is_on_path(command: &str) -> bool {
+    let path = env::var_os("PATH").unwrap_or_default();
+    let extensions = path_extensions(env::var_os("PATHEXT").as_deref());
+
+    env::split_paths(&path).any(|directory| {
+        fs::read_dir(directory).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                command_name_for_path(&entry.path(), &extensions)
+                    .is_some_and(|name| path_command_names_equal(&name, command))
+            })
+        })
+    })
+}
+
+#[cfg(windows)]
+fn path_command_names_equal(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+#[cfg(not(windows))]
+fn path_command_names_equal(left: &str, right: &str) -> bool {
+    left == right
+}
+
+pub(crate) fn path_command_suggestions_from(
+    prefix: &str,
+    start: usize,
+    end: usize,
+    path_dirs: impl IntoIterator<Item = PathBuf>,
+    path_ext: Option<&OsStr>,
+    styles: ThemeStyles,
+) -> Vec<Suggestion> {
+    let extensions = path_extensions(path_ext);
+    let mut candidates = HashSet::new();
+
+    for directory in path_dirs {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = command_name_for_path(&path, &extensions) else {
+                continue;
+            };
+            if command_candidate_matches(&name, prefix) {
+                candidates.insert(name);
+            }
+        }
+    }
+
+    let mut candidates = candidates.into_iter().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.to_lowercase()
+            .cmp(&right.to_lowercase())
+            .then_with(|| left.cmp(right))
+    });
+    candidates.truncate(MAX_COMPLETION_SUGGESTIONS);
+    candidates
+        .into_iter()
+        .map(|name| command_suggestion(&name, "command on PATH", start, end, styles))
+        .collect()
+}
+
+fn path_extensions(path_ext: Option<&OsStr>) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        path_ext
+            .unwrap_or_else(|| OsStr::new(".COM;.EXE;.BAT;.CMD"))
+            .to_string_lossy()
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+            .map(|extension| extension.to_ascii_lowercase())
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path_ext;
+        Vec::new()
+    }
+}
+
+#[cfg(unix)]
+fn command_name_for_path(path: &Path, _extensions: &[String]) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    (path.is_file() && path.metadata().ok()?.permissions().mode() & 0o111 != 0)
+        .then(|| path.file_name()?.to_str().map(str::to_string))?
+}
+
+#[cfg(windows)]
+fn command_name_for_path(path: &Path, extensions: &[String]) -> Option<String> {
+    if !path.is_file() {
+        return None;
+    }
+
+    let name = path.file_name()?.to_str()?;
+    let extension = path.extension()?.to_str()?;
+    let extension = format!(".{extension}").to_ascii_lowercase();
+    extensions
+        .iter()
+        .any(|allowed| allowed == &extension)
+        .then(|| name[..name.len() - extension.len()].to_string())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn command_name_for_path(path: &Path, _extensions: &[String]) -> Option<String> {
+    path.is_file()
+        .then(|| path.file_name()?.to_str().map(str::to_string))?
 }
 
 pub(crate) fn shell_file_completion_suggestions_from(
@@ -1243,7 +1557,7 @@ pub(crate) fn command_completion_suggestions(
 
     let before_cursor = &line[..pos];
     if before_cursor.starts_with(":!") {
-        return Some(shell_file_completion_suggestions(line, pos, styles));
+        return Some(shell_completion_suggestions(line, pos, styles));
     }
 
     let command_line = &before_cursor[1..];
@@ -1291,10 +1605,12 @@ pub(crate) fn command_name_suggestions(
 ) -> Vec<Suggestion> {
     [
         ("clear", "Clear the console"),
-        ("config", "Show or edit config file"),
-        ("conf", "Show or edit config file"),
+        ("config", "Open settings menu"),
+        ("conf", "Open settings menu"),
         ("help", "Show REPL commands"),
         ("history", "Open the history browser"),
+        ("setting", "Open settings menu"),
+        ("settings", "Open settings menu"),
         ("theme", "Change syntax highlighting theme"),
         ("quit", "Quit the REPL"),
     ]
@@ -1310,11 +1626,14 @@ pub(crate) fn config_arg_suggestions(
     end: usize,
     styles: ThemeStyles,
 ) -> Vec<Suggestion> {
-    [("edit", "Open the config file in $EDITOR")]
-        .into_iter()
-        .filter(|(value, _)| command_candidate_matches(value, prefix))
-        .map(|(value, description)| command_suggestion(value, description, start, end, styles))
-        .collect()
+    [
+        ("show", "Show config file location"),
+        ("edit", "Open the config file in $EDITOR"),
+    ]
+    .into_iter()
+    .filter(|(value, _)| command_candidate_matches(value, prefix))
+    .map(|(value, description)| command_suggestion(value, description, start, end, styles))
+    .collect()
 }
 
 pub(crate) fn theme_arg_suggestions(

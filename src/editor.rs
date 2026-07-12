@@ -3,7 +3,7 @@ use std::{
     env,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -21,6 +21,7 @@ use reedline::{
 };
 
 use crate::{
+    completion::GhostCompletionSelection,
     frontend::FrontEndStatus,
     kernel::KernelStatus,
     theme::{ThemeHandle, ThemeStyles},
@@ -361,29 +362,31 @@ impl Menu for StringAwareIdeMenu {
     }
 }
 
-pub(crate) fn completion_edit_mode() -> Emacs {
+pub(crate) fn completion_edit_mode(enable_completion_menu: bool) -> Emacs {
     let mut keybindings = default_emacs_keybindings();
 
     keybindings.add_binding(
         KeyModifiers::NONE,
         KeyCode::Tab,
-        accept_or_open_completion(),
+        accept_or_open_completion(enable_completion_menu),
     );
     keybindings.add_binding(
         KeyModifiers::CONTROL,
         KeyCode::Char('i'),
-        accept_or_open_completion(),
+        accept_or_open_completion(enable_completion_menu),
     );
     keybindings.add_binding(
         KeyModifiers::NONE,
         KeyCode::Char('\t'),
-        accept_or_open_completion(),
+        accept_or_open_completion(enable_completion_menu),
     );
-    keybindings.add_binding(
-        KeyModifiers::CONTROL,
-        KeyCode::Char(' '),
-        ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
-    );
+    if enable_completion_menu {
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char(' '),
+            ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
+        );
+    }
     keybindings.add_binding(
         KeyModifiers::CONTROL,
         KeyCode::Char('r'),
@@ -430,17 +433,17 @@ pub(crate) fn completion_edit_mode() -> Emacs {
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Char(lower),
-            insert_and_open_completion(lower),
+            insert_completion_character(lower, enable_completion_menu),
         );
         keybindings.add_binding(
             KeyModifiers::SHIFT,
             KeyCode::Char(lower),
-            insert_and_open_completion(upper),
+            insert_completion_character(upper, enable_completion_menu),
         );
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Char(upper),
-            insert_and_open_completion(upper),
+            insert_completion_character(upper, enable_completion_menu),
         );
     }
 
@@ -448,12 +451,12 @@ pub(crate) fn completion_edit_mode() -> Emacs {
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Char(ch),
-            insert_and_open_completion(ch),
+            insert_completion_character(ch, enable_completion_menu),
         );
         keybindings.add_binding(
             KeyModifiers::SHIFT,
             KeyCode::Char(ch),
-            insert_and_open_completion(ch),
+            insert_completion_character(ch, enable_completion_menu),
         );
     }
 
@@ -464,41 +467,57 @@ pub(crate) fn completion_edit_mode() -> Emacs {
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Char(ch),
-            insert_and_close_completion(ch),
+            insert_non_completion_character(ch, enable_completion_menu),
         );
         keybindings.add_binding(
             KeyModifiers::SHIFT,
             KeyCode::Char(ch),
-            insert_and_close_completion(ch),
+            insert_non_completion_character(ch, enable_completion_menu),
         );
     }
 
     Emacs::new(keybindings)
 }
 
-fn accept_or_open_completion() -> ReedlineEvent {
-    ReedlineEvent::UntilFound(vec![
-        ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
-        ReedlineEvent::Enter,
-    ])
+fn accept_or_open_completion(enable_completion_menu: bool) -> ReedlineEvent {
+    if enable_completion_menu {
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintComplete,
+            ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
+            ReedlineEvent::Enter,
+        ])
+    } else {
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintComplete,
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar('\t')]),
+        ])
+    }
 }
 
-fn insert_and_open_completion(ch: char) -> ReedlineEvent {
-    ReedlineEvent::Multiple(vec![
-        ReedlineEvent::Edit(vec![EditCommand::InsertChar(ch)]),
-        ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
-    ])
+fn insert_completion_character(ch: char, enable_completion_menu: bool) -> ReedlineEvent {
+    if enable_completion_menu {
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar(ch)]),
+            ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
+        ])
+    } else {
+        ReedlineEvent::Edit(vec![EditCommand::InsertChar(ch)])
+    }
 }
 
 fn insert_tab_character() -> ReedlineEvent {
     ReedlineEvent::Edit(vec![EditCommand::InsertChar('\t')])
 }
 
-fn insert_and_close_completion(ch: char) -> ReedlineEvent {
-    ReedlineEvent::Multiple(vec![
-        ReedlineEvent::Edit(vec![EditCommand::InsertChar(ch)]),
-        ReedlineEvent::Esc,
-    ])
+fn insert_non_completion_character(ch: char, enable_completion_menu: bool) -> ReedlineEvent {
+    if enable_completion_menu {
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar(ch)]),
+            ReedlineEvent::Esc,
+        ])
+    } else {
+        ReedlineEvent::Edit(vec![EditCommand::InsertChar(ch)])
+    }
 }
 
 /// Handle used to arm the history menu so it opens on the next keystroke.
@@ -529,6 +548,7 @@ impl HistoryTrigger {
 struct HistoryPrimedEditMode {
     inner: Emacs,
     trigger: HistoryTrigger,
+    ghost_completion_selection: Option<Arc<Mutex<GhostCompletionSelection>>>,
     /// True while the history menu is open. While active, plain character
     /// keys bypass `inner`'s Wolfram-completion bindings (which insert a
     /// char and then close whatever menu is open, e.g. on operators like
@@ -550,6 +570,14 @@ impl EditMode for HistoryPrimedEditMode {
         }
         if is_history_open_key(&raw) {
             self.history_active.set(true);
+        }
+
+        if !self.history_active.get() {
+            if let Some(event) =
+                ghost_completion_navigation_event(&raw, self.ghost_completion_selection.as_ref())
+            {
+                return event;
+            }
         }
 
         if self.history_active.get() {
@@ -581,6 +609,36 @@ impl EditMode for HistoryPrimedEditMode {
 
     fn edit_mode(&self) -> PromptEditMode {
         self.inner.edit_mode()
+    }
+}
+
+fn ghost_completion_navigation_event(
+    raw: &Event,
+    selection: Option<&Arc<Mutex<GhostCompletionSelection>>>,
+) -> Option<ReedlineEvent> {
+    let selection = selection?;
+    if !GhostCompletionSelection::is_active(selection) {
+        return None;
+    }
+
+    match raw {
+        Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            ..
+        }) => {
+            GhostCompletionSelection::select_next(selection);
+            Some(ReedlineEvent::Repaint)
+        }
+        Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+            ..
+        }) => {
+            GhostCompletionSelection::select_previous(selection);
+            Some(ReedlineEvent::Repaint)
+        }
+        _ => None,
     }
 }
 
@@ -649,10 +707,15 @@ fn plain_char_insert(raw: &Event) -> Option<ReedlineEvent> {
     }
 }
 
-pub(crate) fn history_primed_edit_mode(inner: Emacs, trigger: HistoryTrigger) -> Box<dyn EditMode> {
+pub(crate) fn history_primed_edit_mode(
+    inner: Emacs,
+    trigger: HistoryTrigger,
+    ghost_completion_selection: Option<Arc<Mutex<GhostCompletionSelection>>>,
+) -> Box<dyn EditMode> {
     Box::new(HistoryPrimedEditMode {
         inner,
         trigger,
+        ghost_completion_selection,
         history_active: Cell::new(false),
     })
 }

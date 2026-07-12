@@ -7,7 +7,7 @@ use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 
 use crate::{
-    completion::SymbolHighlighterLookup,
+    completion::{SymbolHighlighterLookup, command_is_on_path},
     theme::{Theme, ThemeHandle, ThemeStyles},
     wolfram_syntax::{is_symbol_char, is_symbol_start, short_symbol_name},
 };
@@ -229,6 +229,15 @@ fn highlight_shell_escape(
     styles: ThemeStyles,
     shell_escape_start: usize,
 ) -> StyledText {
+    highlight_shell_escape_with_command_lookup(line, styles, shell_escape_start, command_is_on_path)
+}
+
+pub(crate) fn highlight_shell_escape_with_command_lookup(
+    line: &str,
+    styles: ThemeStyles,
+    shell_escape_start: usize,
+    command_exists: impl Fn(&str) -> bool,
+) -> StyledText {
     let mut out = StyledText::new();
     if shell_escape_start > 0 {
         out.push((Style::new(), line[..shell_escape_start].to_string()));
@@ -274,9 +283,14 @@ fn highlight_shell_escape(
                 chars.next();
                 end = next_idx + next.len_utf8();
             }
+            let token = &command[start..end];
             let style = if Some(start) == first_word_start && !highlighted_command {
                 highlighted_command = true;
-                styles.completion_command
+                if command_exists(token) {
+                    styles.completion_command
+                } else {
+                    Style::new()
+                }
             } else {
                 styles.completion_option
             };

@@ -147,11 +147,11 @@ Quick list of all features:
 | `Ctrl + C`     | Abort evaluation **[WIP]**                                   |
 | `Ctrl + D`     | Exit the program                                             |
 | `Ctrl + R`     | Open history browser                                         |
-| `Tab`          | Accept currently selected completion or open completion menu |
+| `Tab`          | Accept ghost text/current completion or open completion menu |
 | `Ctrl + Space` | Open completion menu                                         |
 | `Esc`          | Close completion menu                                        |
 
-The REPL opens an IDE-style completion popup dynamically as you type symbol characters. Use `Tab` to cycle/accept entries, `Shift+Tab` to move backward, and `Esc` to close the popup.
+The REPL opens an IDE-style completion popup dynamically as you type symbol characters. Inline ghost text is disabled by default; enable it with `--completion-ghost-text`. Use `Tab` or `Right Arrow` to accept ghost text when enabled, `Tab` to cycle/accept popup entries, `Shift+Tab` to move backward, and `Esc` to close the popup.
 
 Symbol completions are queried from the active kernel session as you type, so user-defined symbols, functions, and loaded package symbols are included after each evaluation. The query uses prefix-shaped `Names` calls, for example:
 
@@ -175,6 +175,15 @@ Disable ANSI coloring with:
 wolfie --no-color
 ```
 
+Enable inline completion ghost text, or disable the popup completion menu, with:
+
+```sh
+wolfie --completion-ghost-text
+wolfie --no-completion-menu
+```
+
+The same defaults can be set in `config.json` under `command` with `completion-ghost-text` and `no-completion-menu`. The legacy `no-completion-ghost-text` key is still accepted for disabling a previously enabled ghost-text default.
+
 ## Commands
 
 Lines that start with `:` are handled by the CLI instead of being evaluated as Wolfram Language input:
@@ -182,16 +191,18 @@ Lines that start with `:` are handled by the CLI instead of being evaluated as W
 | Command       | Description                   |
 | ------------- | ----------------------------- |
 | :clear        | Clear the console             |
-| :config       | Show config file location     |
-| :config edit  | Open config file in `$EDITOR` |
-| :help         | Print help message            |
-| :history      | Search command history        |
-| :!{command}   | Run a command in your shell   |
-| :theme        | Cycle current theme           |
-| :theme {name} | Set theme to {name}           |
-| :theme list   | List all theme names          |
-| :theme show   | Show current theme            |
-| :quit         | Quit the shell                |
+| :setting      | Open the friendly settings menu |
+| :config       | Open the friendly settings menu |
+| :config show  | Show config file location       |
+| :config edit  | Open config file in `$EDITOR`   |
+| :help         | Print help message              |
+| :history      | Search command history          |
+| :!{command}   | Run a command in your shell     |
+| :theme        | Cycle current theme             |
+| :theme {name} | Set theme to {name}             |
+| :theme list   | List all theme names            |
+| :theme show   | Show current theme              |
+| :quit         | Quit the shell                  |
 
 Command completions are available only when the line starts with `:`. Wolfram Language completions are disabled for those command lines.
 
@@ -202,13 +213,13 @@ Use `:!` to run an external command through your shell without leaving the REPL.
 :!git status
 ```
 
-While typing a `:!` command, Wolfie uses shell-oriented highlighting and offers file and directory completions for path-like arguments.
+While typing a `:!` command, Wolfie uses shell-oriented highlighting and offers completions for executable command names on `PATH`, plus files and directories for path-like arguments. On Windows, command discovery respects `PATHEXT`.
 
 ## Themes
 
-Theme selections made with `:theme` or `:theme {name}` are persisted to the user config file and restored the next time the REPL starts.
+Theme selections made with `:theme`, `:theme {name}`, or the `:setting` / `:config` menu are persisted to the user config file and restored the next time the REPL starts.
 
-CLI defaults can also be set in the same config file. Explicit command-line flags override these defaults where the CLI has a value to override. To ignore the saved config and use fresh in-memory defaults for only the current session, start Wolfie with `--skip-config`:
+The settings menu can also save CLI defaults such as prompts, completion UI, colors, FrontEnd use, and WSTP link options. Explicit command-line flags override these defaults where the CLI has a value to override. To ignore the saved config and use fresh in-memory defaults for only the current session, start Wolfie with `--skip-config`:
 
 ```sh
 wolfie --skip-config
@@ -223,6 +234,9 @@ wolfie --skip-config
 		"no-color": false,
 		"no-welcome": false,
 		"no-prompt": false,
+		"completion-ghost-text": false,
+		"no-completion-ghost-text": false,
+		"no-completion-menu": false,
 		"linkconnect": false,
 		"linkname": "my-link",
 		"linkprotocol": "SharedMemory",

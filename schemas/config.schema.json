@@ -52,6 +52,30 @@
           "description": "Alias for no-prompt.",
           "type": "boolean"
         },
+        "completion-ghost-text": {
+          "description": "Enable inline ghost text completion hints. Disabled by default.",
+          "type": "boolean"
+        },
+        "completion_ghost_text": {
+          "description": "Alias for completion-ghost-text.",
+          "type": "boolean"
+        },
+        "no-completion-ghost-text": {
+          "description": "Disable inline ghost text completion hints. Kept for overriding older configs or explicit opt-out.",
+          "type": "boolean"
+        },
+        "no_completion_ghost_text": {
+          "description": "Alias for no-completion-ghost-text.",
+          "type": "boolean"
+        },
+        "no-completion-menu": {
+          "description": "Disable the popup completion menu while leaving completion-backed ghost text available unless separately disabled.",
+          "type": "boolean"
+        },
+        "no_completion_menu": {
+          "description": "Alias for no-completion-menu.",
+          "type": "boolean"
+        },
         "linkconnect": {
           "description": "Connect to an existing WSTP link instead of launching a new kernel.",
           "type": "boolean"
@@ -112,6 +136,8 @@
         "no-color": false,
         "no-welcome": false,
         "no-prompt": false,
+        "completion-ghost-text": false,
+        "no-completion-menu": false,
         "linkconnect": false,
         "linkname": "my-link",
         "linkprotocol": "SharedMemory",

@@ -19,7 +19,10 @@ use crate::{
         CommandAction, ConfigMode, execute_repl_command, execute_shell_escape, run_shell_escape,
         top_level_run_command,
     },
-    completion::{CompletionSource, WolframCompleter, builtin_symbol_set},
+    completion::{
+        CompletionSource, GhostCompletionSelection, WolframCompleter, WolframCompletionHinter,
+        builtin_symbol_set,
+    },
     editor::{
         HistoryTrigger, WolframPrompt, WolframValidator, completion_edit_mode, completion_menu,
         history_menu, history_path, history_primed_edit_mode,
@@ -44,6 +47,8 @@ pub(crate) fn run_repl(
     connection: KernelConnection,
     config: UserConfig,
     config_mode: ConfigMode,
+    enable_completion_ghost_text: bool,
+    enable_completion_menu: bool,
 ) -> Result<()> {
     let history = history_path()?;
     let completion_epoch = Arc::new(AtomicU64::new(0));
@@ -55,10 +60,6 @@ pub(crate) fn run_repl(
         None
     };
     spawn_kernel_warmup(kernel.clone());
-    if show_welcome {
-        let versions = wolfram_versions();
-        print_welcome(use_color, &versions);
-    }
     let theme_registry = match config_mode {
         ConfigMode::User => ThemeRegistry::load(),
         ConfigMode::Ephemeral => ThemeRegistry::builtin_only(),
@@ -68,6 +69,10 @@ pub(crate) fn run_repl(
         ConfigMode::User => ThemeHandle::new(initial_theme, theme_registry),
         ConfigMode::Ephemeral => ThemeHandle::ephemeral(initial_theme, theme_registry),
     };
+    if show_welcome {
+        let versions = wolfram_versions();
+        print_welcome(use_color, &versions, &theme);
+    }
     let completion_source = CompletionSource::new(
         kernel.clone(),
         completion_epoch.clone(),
@@ -76,6 +81,8 @@ pub(crate) fn run_repl(
     let symbol_lookup = completion_source.highlighter_lookup();
     let symbol_set = builtin_symbol_set();
     let history_trigger = HistoryTrigger::new();
+    let ghost_completion_selection = (enable_completion_ghost_text && !enable_completion_menu)
+        .then(GhostCompletionSelection::new);
     let mut line_editor = Reedline::create()
         .use_kitty_keyboard_enhancement(true)
         .with_ansi_colors(use_color)
@@ -89,20 +96,30 @@ pub(crate) fn run_repl(
             theme.clone(),
         )))
         .with_completer(Box::new(WolframCompleter::new(
-            completion_source,
+            completion_source.clone(),
             theme.clone(),
         )))
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(
-            theme.clone(),
-        ))))
         .with_menu(ReedlineMenu::HistoryMenu(Box::new(history_menu(
             theme.clone(),
         ))))
         .with_validator(Box::new(WolframValidator))
         .with_edit_mode(history_primed_edit_mode(
-            completion_edit_mode(),
+            completion_edit_mode(enable_completion_menu),
             history_trigger.clone(),
+            ghost_completion_selection.clone(),
         ));
+    if enable_completion_ghost_text {
+        line_editor = line_editor.with_hinter(Box::new(WolframCompletionHinter::new(
+            completion_source.clone(),
+            theme.clone(),
+            ghost_completion_selection.unwrap_or_else(GhostCompletionSelection::new),
+        )));
+    }
+    if enable_completion_menu {
+        line_editor = line_editor.with_menu(ReedlineMenu::EngineCompleter(Box::new(
+            completion_menu(theme.clone()),
+        )));
+    }
     loop {
         let prompt = WolframPrompt {
             input_prompt: kernel_input_prompt(&kernel)?.unwrap_or_else(|| "In[1]:= ".to_string()),
@@ -224,13 +241,13 @@ const WELCOME_GRADIENT: [nu_ansi_term::Rgb; 6] = [
     nu_ansi_term::Rgb::new(130, 120, 110),
 ];
 
-fn print_welcome(use_color: bool, versions: &WolframVersions) {
+fn print_welcome(use_color: bool, versions: &WolframVersions, theme: &ThemeHandle) {
     if use_color {
         if terminal_can_fit_welcome_banner() {
-            print_gradient_welcome(versions);
+            print_gradient_welcome(versions, theme);
         } else {
             println!("\n    Wolfram Friendly Interactive Shell\n");
-            print_styled_welcome_details(versions);
+            print_styled_welcome_details(versions, theme);
         }
     } else {
         print_plain_welcome(versions);
@@ -255,7 +272,7 @@ fn print_plain_welcome(versions: &WolframVersions) {
     println!("Type :help for commands, :quit or Ctrl-D to quit.\n");
 }
 
-fn print_gradient_welcome(versions: &WolframVersions) {
+fn print_gradient_welcome(versions: &WolframVersions, theme: &ThemeHandle) {
     // let animate = io::stdout().is_terminal();
     let lines: Vec<_> = WELCOME_BANNER.trim_matches('\n').lines().collect();
 
@@ -270,13 +287,12 @@ fn print_gradient_welcome(versions: &WolframVersions) {
         // }
     }
 
-    print_styled_welcome_details(versions);
+    print_styled_welcome_details(versions, theme);
 }
 
-fn print_styled_welcome_details(versions: &WolframVersions) {
-    let accent = nu_ansi_term::Style::new()
-        .bold()
-        .fg(nu_ansi_term::Color::Rgb(250, 70, 35));
+fn print_styled_welcome_details(versions: &WolframVersions, theme: &ThemeHandle) {
+	let styles = theme.current().styles();
+    let accent = styles.prompt_left;
     let title = nu_ansi_term::Style::new()
         .bold()
         .fg(nu_ansi_term::Color::Rgb(255, 255, 255));

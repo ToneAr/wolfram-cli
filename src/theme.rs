@@ -466,6 +466,24 @@ pub(crate) struct CommandConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) no_prompt: Option<bool>,
+    #[serde(
+        rename = "completion-ghost-text",
+        alias = "completion_ghost_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) completion_ghost_text: Option<bool>,
+    #[serde(
+        rename = "no-completion-ghost-text",
+        alias = "no_completion_ghost_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) no_completion_ghost_text: Option<bool>,
+    #[serde(
+        rename = "no-completion-menu",
+        alias = "no_completion_menu",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) no_completion_menu: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) linkconnect: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -486,6 +504,9 @@ impl CommandConfig {
             && self.no_color.is_none()
             && self.no_welcome.is_none()
             && self.no_prompt.is_none()
+            && self.completion_ghost_text.is_none()
+            && self.no_completion_ghost_text.is_none()
+            && self.no_completion_menu.is_none()
             && self.linkconnect.is_none()
             && self.linkname.is_none()
             && self.linkprotocol.is_none()
@@ -505,18 +526,22 @@ pub(crate) fn load_user_config() -> UserConfig {
     serde_json::from_str::<UserConfig>(&content).unwrap_or_default()
 }
 
-fn save_theme_preference(theme: &Theme) -> Result<()> {
+pub(crate) fn save_user_config(config: &UserConfig) -> Result<()> {
     let path = config_file().context("could not determine the user config directory")?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
+    let content = serde_json::to_string_pretty(config)?;
+    fs::write(&path, format!("{content}\n"))
+        .with_context(|| format!("failed to write config to {}", path.display()))
+}
+
+fn save_theme_preference(theme: &Theme) -> Result<()> {
     let mut config = load_user_config();
     config.theme = Some(theme.name().to_string());
-    let content = serde_json::to_string_pretty(&config)?;
-    fs::write(&path, format!("{content}\n"))
-        .with_context(|| format!("failed to write theme preference to {}", path.display()))
+    save_user_config(&config)
 }
 
 pub(crate) fn print_theme_browser(current: Theme, registry: &ThemeRegistry, use_color: bool) {

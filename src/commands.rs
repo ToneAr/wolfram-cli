@@ -5,10 +5,11 @@ use std::{
     process::{Command, ExitStatus, Stdio},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 use crate::theme::{
-    CONFIG_SCHEMA_URL, Theme, ThemeHandle, ThemeRegistry, config_file, print_theme_browser,
+    config_file, load_user_config, print_theme_browser, save_user_config, CommandConfig, Theme,
+    ThemeHandle, ThemeRegistry, UserConfig, CONFIG_SCHEMA_URL,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub(crate) enum ReplCommand {
     Clear,
     Config(ConfigCommand),
     Help,
+    Settings,
     History,
     Theme(ThemeCommand),
     Quit,
@@ -99,6 +101,19 @@ pub(crate) fn execute_repl_command(
             print_command_help(theme.current(), theme.registry());
             CommandAction::Continue
         }
+        ReplCommand::Settings => {
+            match config_mode {
+                ConfigMode::User => {
+                    if let Err(err) = run_settings_menu(theme, use_color) {
+                        println!("Could not update settings: {err:#}");
+                    }
+                }
+                ConfigMode::Ephemeral => println!(
+                    "Settings are disabled by --skip-config for this ephemeral session. Use :theme for temporary theme changes."
+                ),
+            }
+            CommandAction::Continue
+        }
         ReplCommand::History => CommandAction::OpenHistory,
         ReplCommand::Theme(ThemeCommand::Cycle) => {
             if !use_color {
@@ -138,7 +153,9 @@ pub(crate) fn execute_shell_escape(command: &str) {
 fn print_command_help(theme: Theme, registry: &ThemeRegistry) {
     println!("Commands:");
     println!("  :clear                Clear the console.");
-    println!("  :config | :conf       Show config file location.");
+    println!("  :setting | :settings  Open the friendly settings menu.");
+    println!("  :config | :conf       Open the friendly settings menu.");
+    println!("  :config show          Show config file location.");
     println!("  :config edit          Open config file in $EDITOR.");
     println!("  :help | :h | :?       Show this help.");
     println!("  :history | :hist      Open the history browser.");
@@ -165,6 +182,369 @@ fn set_theme(theme: &ThemeHandle, next: Theme) {
     match theme.set(next) {
         Ok(()) => println!("Theme: {name}"),
         Err(err) => println!("Theme: {name} (warning: could not save preference: {err:#})"),
+    }
+}
+
+fn run_settings_menu(theme: &ThemeHandle, use_color: bool) -> Result<()> {
+    let mut config = load_user_config();
+    print_settings_menu(&config, theme);
+    loop {
+        let choice = read_menu_line("Choose a setting to change (or q to leave): ")?;
+        match choice.trim().to_ascii_lowercase().as_str() {
+            "q" | "quit" | "exit" | "done" => break,
+            "1" | "theme" => configure_theme(&mut config, theme, use_color)?,
+            "2" | "no-frontend" | "frontend" => configure_bool(
+                &mut config,
+                "no-frontend",
+                "Disable Wolfram FrontEnd-backed completions/rendering",
+                |command| &mut command.no_frontend,
+            )?,
+            "3" | "no-color" | "color" => configure_bool(
+                &mut config,
+                "no-color",
+                "Disable ANSI coloring on startup",
+                |command| &mut command.no_color,
+            )?,
+            "4" | "no-welcome" | "welcome" => configure_bool(
+                &mut config,
+                "no-welcome",
+                "Hide the welcome banner on startup",
+                |command| &mut command.no_welcome,
+            )?,
+            "5" | "no-prompt" | "prompt" => configure_bool(
+                &mut config,
+                "no-prompt",
+                "Disable REPL prompts and the welcome banner",
+                |command| &mut command.no_prompt,
+            )?,
+            "6" | "completion-ghost-text" | "ghost" => configure_bool(
+                &mut config,
+                "completion-ghost-text",
+                "Enable inline ghost text completion hints",
+                |command| &mut command.completion_ghost_text,
+            )?,
+            "7" | "no-completion-ghost-text" => configure_bool(
+                &mut config,
+                "no-completion-ghost-text",
+                "Explicitly disable inline ghost text completion hints",
+                |command| &mut command.no_completion_ghost_text,
+            )?,
+            "8" | "no-completion-menu" | "menu" => configure_bool(
+                &mut config,
+                "no-completion-menu",
+                "Disable the popup completion menu",
+                |command| &mut command.no_completion_menu,
+            )?,
+            "9" | "linkconnect" => configure_bool(
+                &mut config,
+                "linkconnect",
+                "Connect to an existing WSTP link on startup",
+                |command| &mut command.linkconnect,
+            )?,
+            "10" | "linkname" => configure_string(
+                &mut config,
+                "linkname",
+                "WSTP link name to use with linkconnect",
+                |command| &mut command.linkname,
+            )?,
+            "11" | "linkprotocol" => configure_link_protocol(&mut config)?,
+            "12" | "linkmode" => configure_string(
+                &mut config,
+                "linkmode",
+                "WSTP link mode for launching or connecting",
+                |command| &mut command.linkmode,
+            )?,
+            "13" | "linkoptions" => configure_u32(
+                &mut config,
+                "linkoptions",
+                "WSTP link options integer",
+                |command| &mut command.linkoptions,
+            )?,
+            "14" | "linkinit" => configure_bool(
+                &mut config,
+                "linkinit",
+                "Initialize linkoptions=4 connected kernels in Wolfie's launch directory",
+                |command| &mut command.linkinit,
+            )?,
+            "e" | "edit" => {
+                edit_config_file()?;
+                config = load_user_config();
+            }
+            "p" | "path" | "show" => print_config_location(),
+            other => println!(
+                "I don't know {other:?}. Pick a number, e to edit, p for path, or q to leave."
+            ),
+        }
+    }
+    println!("Settings menu closed.");
+    Ok(())
+}
+
+fn print_settings_menu(config: &UserConfig, theme: &ThemeHandle) {
+    let current_theme = theme.current();
+    let styles = current_theme.styles();
+    let italic = nu_ansi_term::Style::new().italic();
+    let value_style = styles.comment;
+    let title_style = nu_ansi_term::Style::new().bold();
+    let underline = title_style.underline();
+
+    println!();
+    println!("{}", underline.paint("Wolfie settings:"));
+    println!();
+    let options = [
+        (
+            "1.  theme                 ",
+            config.theme.as_deref().unwrap_or(current_theme.name()),
+        ),
+        (
+            "2.  no-frontend           ",
+            option_label(config.command.no_frontend),
+        ),
+        (
+            "3.  no-color              ",
+            option_label(config.command.no_color),
+        ),
+        (
+            "4.  no-welcome            ",
+            option_label(config.command.no_welcome),
+        ),
+        (
+            "5.  no-prompt             ",
+            option_label(config.command.no_prompt),
+        ),
+        (
+            "6.  completion-ghost-text ",
+            option_label(config.command.completion_ghost_text),
+        ),
+        (
+            "7.  no-completion-menu    ",
+            option_label(config.command.no_completion_menu),
+        ),
+        (
+            "8.  linkconnect           ",
+            option_label(config.command.linkconnect),
+        ),
+        (
+            "9.  linkname              ",
+            string_label(config.command.linkname.as_deref()),
+        ),
+        (
+            "10. linkprotocol          ",
+            string_label(config.command.linkprotocol.as_deref()),
+        ),
+        (
+            "11. linkinit              ",
+            option_label(config.command.linkinit),
+        ),
+    ];
+    let option_width = options
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("OPTION NAME".chars().count());
+    let value_width = options
+        .iter()
+        .map(|(_, value)| value.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("CURRENT VALUE".chars().count())
+        + 1;
+    let option_border = "─".repeat(option_width + 2);
+    let value_border = "─".repeat(value_width + 2);
+
+    println!("╭{}┬{}╮", option_border, value_border);
+    println!(
+        "│ {:<option_width$} │ {:<value_width$} │",
+        "OPTION NAME", "CURRENT VALUE"
+    );
+    println!("├{}┼{}┤", option_border, value_border);
+    options.into_iter().for_each(|(name, value)| {
+        println!(
+            "│ {} │ {} │",
+            title_style.paint(format!("{name:<option_width$}")),
+            value_style.paint(format!("{value:<value_width$}"))
+        )
+    });
+    println!("╰{}┴{}╯", option_border, value_border);
+    println!();
+    println!("Commands:");
+    println!("{} - Edit option number {}", italic.paint("num"), italic.paint("num"));
+    println!("e   - Open config file in $EDITOR");
+    println!("p   - Print config file path");
+    println!("q   - Quit settings editor");
+}
+
+fn option_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "on",
+        Some(false) => "off",
+        None => "default",
+    }
+}
+
+fn string_label(value: Option<&str>) -> &str {
+    value.filter(|value| !value.is_empty()).unwrap_or("default")
+}
+
+fn read_menu_line(prompt: &str) -> Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn configure_theme(config: &mut UserConfig, theme: &ThemeHandle, use_color: bool) -> Result<()> {
+    println!("Available themes:");
+    for (index, available_theme) in theme.registry().themes().iter().enumerate() {
+        let marker = if *available_theme == theme.current() {
+            "*"
+        } else {
+            " "
+        };
+        println!("  {:>2}. {marker} {}", index + 1, available_theme.name());
+    }
+    let input = read_menu_line("Theme name/number, or unset for default: ")?;
+    if input.eq_ignore_ascii_case("unset") || input.eq_ignore_ascii_case("default") {
+        config.theme = None;
+        save_user_config(config)?;
+        println!("Theme default cleared. Wolfie will use its built-in default next time.");
+        return Ok(());
+    }
+
+    let selected = if let Ok(index) = input.parse::<usize>() {
+        theme
+            .registry()
+            .themes()
+            .get(index.saturating_sub(1))
+            .cloned()
+    } else {
+        theme.registry().parse(&input)
+    };
+    let Some(selected) = selected else {
+        println!("Unknown theme {input:?}. No change made.");
+        return Ok(());
+    };
+
+    config.theme = Some(selected.name().to_string());
+    save_user_config(config)?;
+    if use_color || selected.is_plain() {
+        theme.set(selected.clone())?;
+        println!("Theme set to {}.", selected.name());
+    } else {
+        println!(
+            "Theme saved as {}. Current session is still plain because color is disabled.",
+            selected.name()
+        );
+    }
+    Ok(())
+}
+
+fn configure_bool(
+    config: &mut UserConfig,
+    key: &str,
+    description: &str,
+    field: fn(&mut CommandConfig) -> &mut Option<bool>,
+) -> Result<()> {
+    println!("{key}: {description}");
+    let input = read_menu_line("Set to on/off/default? ")?;
+    let next = match input.trim().to_ascii_lowercase().as_str() {
+        "on" | "yes" | "y" | "true" | "1" => Some(true),
+        "off" | "no" | "n" | "false" | "0" => Some(false),
+        "default" | "unset" | "clear" | "" => None,
+        other => {
+            println!("I don't understand {other:?}. No change made.");
+            return Ok(());
+        }
+    };
+    *field(&mut config.command) = next;
+    save_user_config(config)?;
+    println!("Saved {key} = {}.", option_label(next));
+    Ok(())
+}
+
+fn configure_string(
+    config: &mut UserConfig,
+    key: &str,
+    description: &str,
+    field: fn(&mut CommandConfig) -> &mut Option<String>,
+) -> Result<()> {
+    println!("{key}: {description}");
+    let input = read_menu_line("Enter a value, or unset for default: ")?;
+    let next = if input.is_empty()
+        || input.eq_ignore_ascii_case("unset")
+        || input.eq_ignore_ascii_case("default")
+    {
+        None
+    } else {
+        Some(input)
+    };
+    *field(&mut config.command) = next.clone();
+    save_user_config(config)?;
+    println!("Saved {key} = {}.", string_label(next.as_deref()));
+    Ok(())
+}
+
+fn configure_u32(
+    config: &mut UserConfig,
+    key: &str,
+    description: &str,
+    field: fn(&mut CommandConfig) -> &mut Option<u32>,
+) -> Result<()> {
+    println!("{key}: {description}");
+    let input = read_menu_line("Enter a non-negative integer, or unset for default: ")?;
+    let next = if input.is_empty()
+        || input.eq_ignore_ascii_case("unset")
+        || input.eq_ignore_ascii_case("default")
+    {
+        None
+    } else {
+        Some(
+            input
+                .parse::<u32>()
+                .with_context(|| format!("{key} must be a non-negative integer"))?,
+        )
+    };
+    *field(&mut config.command) = next;
+    save_user_config(config)?;
+    println!(
+        "Saved {key} = {}.",
+        next.map_or("default".to_string(), |value| value.to_string())
+    );
+    Ok(())
+}
+
+fn configure_link_protocol(config: &mut UserConfig) -> Result<()> {
+    println!("linkprotocol: WSTP link protocol to use with linkconnect");
+    println!("  1. SharedMemory");
+    println!("  2. TCPIP");
+    println!("  3. IntraProcess");
+    let input = read_menu_line("Choose a protocol, or unset for default: ")?;
+    let next = match input.trim().to_ascii_lowercase().as_str() {
+        "1" | "sharedmemory" | "shared-memory" | "shared_memory" => {
+            Some("SharedMemory".to_string())
+        }
+        "2" | "tcpip" | "tcp" => Some("TCPIP".to_string()),
+        "3" | "intraprocess" | "intra-process" | "intra_process" => {
+            Some("IntraProcess".to_string())
+        }
+        "unset" | "default" | "" => None,
+        other => {
+            println!("Unknown link protocol {other:?}. No change made.");
+            return Ok(());
+        }
+    };
+    config.command.linkprotocol = next.clone();
+    save_user_config(config)?;
+    println!("Saved linkprotocol = {}.", string_label(next.as_deref()));
+    Ok(())
+}
+
+fn print_config_location() {
+    match config_file() {
+        Some(path) => println!("Config: {}", path.display()),
+        None => println!("Could not determine the config file location."),
     }
 }
 
@@ -319,13 +699,21 @@ pub(crate) fn parse_repl_command(input: &str, registry: &ThemeRegistry) -> Resul
             Ok(ReplCommand::Clear)
         }
         "config" | "conf" => match parts.next() {
-            None => Ok(ReplCommand::Config(ConfigCommand::Show)),
+            None => Ok(ReplCommand::Settings),
+            Some("show" | "path" | "location") => {
+                reject_extra_args(parts, ":config show")?;
+                Ok(ReplCommand::Config(ConfigCommand::Show))
+            }
             Some("edit") => {
                 reject_extra_args(parts, ":config edit")?;
                 Ok(ReplCommand::Config(ConfigCommand::Edit))
             }
-            Some(value) => bail!("unknown config command {value:?}; usage: :config [edit]"),
+            Some(value) => bail!("unknown config command {value:?}; usage: :config [show|edit]"),
         },
+        "setting" | "settings" => {
+            reject_extra_args(parts, ":setting")?;
+            Ok(ReplCommand::Settings)
+        }
         "help" | "h" | "?" => {
             reject_extra_args(parts, ":help")?;
             Ok(ReplCommand::Help)
