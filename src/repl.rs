@@ -29,7 +29,7 @@ use crate::{
     },
     native_wstp::KernelInputRequest,
     theme::{ThemeHandle, ThemeRegistry, UserConfig, selected_theme},
-    wolfram_syntax::remember_user_symbols,
+    wolfram_syntax::{loaded_context_names, remember_user_symbols},
 };
 
 pub(crate) fn run_repl(
@@ -69,6 +69,7 @@ pub(crate) fn run_repl(
         completion_epoch.clone(),
         user_symbols.clone(),
     );
+    let symbol_lookup = completion_source.highlighter_lookup();
     let symbol_set = builtin_symbol_set();
     let history_trigger = HistoryTrigger::new();
     let mut line_editor = Reedline::create()
@@ -79,6 +80,8 @@ pub(crate) fn run_repl(
         .with_highlighter(Box::new(WolframHighlighter::new(
             symbol_set,
             user_symbols.clone(),
+            completion_source.known_qualified_symbols.clone(),
+            symbol_lookup.clone(),
             theme.clone(),
         )))
         .with_completer(Box::new(WolframCompleter::new(
@@ -126,10 +129,7 @@ pub(crate) fn run_repl(
                 }
                 let (mut kernel, may_be_slow) = lock_kernel_for_repl_input(&kernel)?;
                 if may_be_slow {
-                    println!(
-                        "\n{}: Kernel is starting up",
-                        "Wolfie::init"
-                    );
+                    println!("\n{}: Kernel is starting up", "Wolfie::init");
                 }
                 let mut kernel_input_handler = |request: &KernelInputRequest| {
                     read_kernel_input(&mut line_editor, request, theme.clone(), show_prompts)
@@ -140,8 +140,12 @@ pub(crate) fn run_repl(
                     &mut kernel_input_handler,
                     show_prompts,
                 )?;
+                drop(kernel);
                 remember_user_symbols(input, &user_symbols);
                 completion_epoch.fetch_add(1, Ordering::Relaxed);
+                for context in loaded_context_names(input) {
+                    symbol_lookup.prefetch(&context, Duration::from_millis(50));
+                }
             }
             Signal::CtrlC => continue,
             Signal::CtrlD => break,

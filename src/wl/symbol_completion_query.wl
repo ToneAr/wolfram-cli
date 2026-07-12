@@ -8,6 +8,7 @@ Function[
 			visibleSymbols,
 			rawSymbols,
 			contextOf,
+			requestedContext,
 			shortName,
 			isPrivateContext,
 			showsPrivateContext,
@@ -20,6 +21,11 @@ Function[
 				StringReplace[#1, RegularExpression["^(.*`).*$"] -> "$1"],
 				#2
 			]&;
+		requestedContext =
+			If[StringContainsQ[p, "`"],
+				StringReplace[p, RegularExpression["^(.*`).*$"] -> "$1"],
+				""
+			];
 		shortName =
 			If[StringContainsQ[#, "`"],
 				StringReplace[#, RegularExpression["^.*`"] -> ""],
@@ -54,13 +60,13 @@ Function[
 					currentContextSymbols,
 					isVisibleContext[contextOf[#, currentContext]]&
 				],
-				item[#, ""]& /@ Select[
+				item[#, requestedContext]& /@ Select[
 					visibleSymbols,
-					isVisibleContext[contextOf[#, ""]]&
+					isVisibleContext[contextOf[#, requestedContext]]&
 				],
-				item[#, ""]& /@ Select[
+				item[#, requestedContext]& /@ Select[
 					rawSymbols,
-					isVisibleContext[contextOf[#, ""]]&
+					isVisibleContext[contextOf[#, requestedContext]]&
 				]
 			];
 		StringRiffle[Take[DeleteDuplicates[items], UpTo[500]], "\n"]

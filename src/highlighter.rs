@@ -7,6 +7,7 @@ use nu_ansi_term::Style;
 use reedline::{Highlighter, StyledText};
 
 use crate::{
+    completion::SymbolHighlighterLookup,
     theme::{Theme, ThemeHandle, ThemeStyles},
     wolfram_syntax::{is_symbol_char, is_symbol_start, short_symbol_name},
 };
@@ -14,6 +15,8 @@ use crate::{
 pub(crate) struct WolframHighlighter {
     builtin_symbols: &'static HashSet<String>,
     user_symbols: Arc<Mutex<HashSet<String>>>,
+    known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
+    symbol_lookup: SymbolHighlighterLookup,
     theme: ThemeHandle,
 }
 
@@ -21,11 +24,15 @@ impl WolframHighlighter {
     pub(crate) fn new(
         builtin_symbols: &'static HashSet<String>,
         user_symbols: Arc<Mutex<HashSet<String>>>,
+        known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
+        symbol_lookup: SymbolHighlighterLookup,
         theme: ThemeHandle,
     ) -> Self {
         Self {
             builtin_symbols,
             user_symbols,
+            known_qualified_symbols,
+            symbol_lookup,
             theme,
         }
     }
@@ -36,12 +43,20 @@ impl Highlighter for WolframHighlighter {
         let user_symbols = self
             .user_symbols
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let known_qualified_symbols = self
+            .known_qualified_symbols
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         highlight_wolfram_text(
             line,
             self.theme.current().styles(),
             Some(&self.builtin_symbols),
             Some(&user_symbols),
+            Some(&known_qualified_symbols),
+            Some(&self.symbol_lookup),
         )
     }
 }
@@ -51,6 +66,8 @@ pub(crate) fn highlight_wolfram_text(
     styles: ThemeStyles,
     builtin_symbols: Option<&HashSet<String>>,
     user_symbols: Option<&HashSet<String>>,
+    known_qualified_symbols: Option<&HashSet<String>>,
+    symbol_lookup: Option<&SymbolHighlighterLookup>,
 ) -> StyledText {
     let mut out = StyledText::new();
     let mut chars = line.char_indices().peekable();
@@ -108,11 +125,28 @@ pub(crate) fn highlight_wolfram_text(
             let short = short_symbol_name(word);
             let is_builtin = word.starts_with("System`")
                 || builtin_symbols.is_none_or(|symbols| symbols.contains(short));
-            let is_user_defined = user_symbols
-                .is_some_and(|symbols| symbols.contains(short) || symbols.contains(word));
+            if !is_builtin && (is_non_global_or_internal_symbol(word) || !word.contains('`')) {
+                symbol_lookup.inspect(|lookup| lookup.request(word));
+            }
+            let is_user_defined = user_symbols.is_some_and(|symbols| {
+                if word.contains('`') {
+                    is_non_global_or_internal_symbol(word) && symbols.contains(word)
+                } else {
+                    symbols.contains(short)
+                }
+            });
+            let is_known_custom_symbol = known_qualified_symbols.is_some_and(|symbols| {
+                if word.contains('`') {
+                    is_non_global_or_internal_symbol(word) && symbols.contains(word)
+                } else {
+                    symbols
+                        .iter()
+                        .any(|symbol| short_symbol_name(symbol) == word)
+                }
+            });
             let style = if is_builtin {
                 styles.builtin_symbol
-            } else if is_user_defined {
+            } else if is_user_defined || is_known_custom_symbol {
                 styles.user_symbol
             } else {
                 Style::new()
@@ -126,8 +160,16 @@ pub(crate) fn highlight_wolfram_text(
     out
 }
 
+fn is_non_global_or_internal_symbol(symbol: &str) -> bool {
+    symbol.rsplit_once('`').is_some_and(|(context, name)| {
+        !name.is_empty() && !matches!(context, "Global" | "Internal")
+    })
+}
+
 pub(crate) fn print_highlighted(text: &str, theme: &Theme) {
-    for (style, fragment) in highlight_wolfram_text(text, theme.styles(), None, None).buffer {
+    for (style, fragment) in
+        highlight_wolfram_text(text, theme.styles(), None, None, None, None).buffer
+    {
         print!("{}", style.paint(fragment));
     }
     println!();

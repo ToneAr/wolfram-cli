@@ -151,7 +151,8 @@ fn symbol_completion_query_loads_candidates_for_fuzzy_matching() {
     assert!(compact_query.contains("Names[StringJoin[p,\"*\"]]"));
     assert!(compact_query.contains("Names[StringJoin[\"*`\",p,\"*\"]]"));
     assert!(compact_query.contains("item[#,currentContext]&/@"));
-    assert!(compact_query.contains("item[#,\"\"]&/@"));
+    assert!(compact_query.contains("requestedContext="));
+    assert!(compact_query.contains("item[#,requestedContext]&/@"));
     assert!(compact_query.contains("DeleteDuplicates[items]"));
     assert!(query.contains("Contexts[]"));
     assert!(query.contains("matchingContexts"));
@@ -176,11 +177,38 @@ fn symbol_completion_query_loads_candidates_for_fuzzy_matching() {
 }
 
 #[test]
+fn finds_contexts_loaded_with_get() {
+    assert_eq!(
+        loaded_context_names("<<DatabaseLink`"),
+        vec!["DatabaseLink`".to_string()]
+    );
+    assert_eq!(
+        loaded_context_names("<<DatabaseLink`; << OtherPackage`"),
+        vec!["DatabaseLink`".to_string(), "OtherPackage`".to_string()]
+    );
+    assert!(loaded_context_names("<< \"package.wl\"").is_empty());
+}
+
+#[test]
 fn symbol_completion_reuses_broader_query_prefixes() {
     assert_eq!(symbol_query_prefix("M"), "M");
     assert_eq!(symbol_query_prefix("MyC"), "My");
     assert_eq!(symbol_query_prefix("MyContext`"), "MyContext`");
     assert_eq!(symbol_query_prefix("MyContext`foo"), "MyContext`");
+}
+
+#[test]
+fn symbol_highlighter_uses_precise_qualified_prefixes() {
+    assert_eq!(symbol_query_prefix("MyContext`foo"), "MyContext`");
+    assert_eq!(
+        symbol_highlighter_query_prefix("MyContext`foo"),
+        "MyContext`foo"
+    );
+    assert_eq!(
+        symbol_highlighter_query_prefix("DatabaseLink`$SQLTimeout"),
+        "DatabaseLink`$SQLTimeout"
+    );
+    assert_eq!(symbol_highlighter_query_prefix("SQLSelect"), "SQ");
 }
 
 #[test]
@@ -1316,7 +1344,18 @@ fn style_of(
     user: &HashSet<String>,
     word: &str,
 ) -> nu_ansi_term::Style {
-    let styled = highlight_wolfram_text(text, test_styles(), Some(builtin), Some(user));
+    style_of_with_known(text, builtin, user, None, word)
+}
+
+fn style_of_with_known(
+    text: &str,
+    builtin: &HashSet<String>,
+    user: &HashSet<String>,
+    known: Option<&HashSet<String>>,
+    word: &str,
+) -> nu_ansi_term::Style {
+    let styled =
+        highlight_wolfram_text(text, test_styles(), Some(builtin), Some(user), known, None);
     styled
         .buffer
         .into_iter()
@@ -1351,14 +1390,170 @@ fn highlighter_colors_defined_user_symbols_differently_from_builtins() {
 }
 
 #[test]
-fn highlighter_leaves_undefined_symbols_unstyled() {
+fn highlighter_colors_symbols_outside_global_and_internal_contexts() {
     let builtin: HashSet<String> = ["Plot".to_string()].into_iter().collect();
-    let user: HashSet<String> = ["myVar".to_string()].into_iter().collect();
-    let style = style_of(
-        "undefinedThing + Plot[x]",
-        &builtin,
-        &user,
-        "undefinedThing",
+    let user: HashSet<String> = ["OtherContext`x".to_string()].into_iter().collect();
+    let text = "Global`x + Internal`x + OtherContext`x + OtherContext`unknown";
+
+    assert_eq!(
+        style_of(text, &builtin, &user, "Global`x"),
+        nu_ansi_term::Style::new()
     );
-    assert_eq!(style, nu_ansi_term::Style::new());
+    assert_eq!(
+        style_of(text, &builtin, &user, "Internal`x"),
+        nu_ansi_term::Style::new()
+    );
+    assert_eq!(
+        style_of(text, &builtin, &user, "OtherContext`x"),
+        test_styles().user_symbol
+    );
+    assert_eq!(
+        style_of(text, &builtin, &user, "OtherContext`unknown"),
+        nu_ansi_term::Style::new()
+    );
+}
+
+#[test]
+fn highlighter_colors_exact_custom_context_symbols_from_completion() {
+    let backend = FakeBackend {
+        symbols: HashMap::from([(
+            "OtherContext`known".to_string(),
+            vec![CompletionItem {
+                value: "known".to_string(),
+                kind: CompletionKind::Symbol,
+                frequency: None,
+                context: Some("OtherContext`".to_string()),
+            }],
+        )]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let lookup = source.highlighter_lookup();
+    lookup.request("OtherContext`known");
+    wait_until(|| {
+        source
+            .known_qualified_symbols
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains("OtherContext`known")
+    });
+
+    let builtin = HashSet::new();
+    let user = HashSet::new();
+    let known = source
+        .known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let text = "OtherContext`known + OtherContext`unknown";
+    assert_eq!(
+        style_of_with_known(text, &builtin, &user, Some(&known), "OtherContext`known"),
+        test_styles().user_symbol
+    );
+    assert_eq!(
+        style_of_with_known(text, &builtin, &user, Some(&known), "OtherContext`unknown"),
+        nu_ansi_term::Style::new()
+    );
+}
+
+#[test]
+fn highlighter_colors_unqualified_package_symbols_from_completion() {
+    let backend = FakeBackend {
+        symbols: HashMap::from([(
+            "SQ".to_string(),
+            vec![CompletionItem {
+                value: "SQLSelect".to_string(),
+                kind: CompletionKind::Symbol,
+                frequency: None,
+                context: Some("DatabaseLink`".to_string()),
+            }],
+        )]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let lookup = source.highlighter_lookup();
+    lookup.request("SQLSelect");
+    wait_until(|| {
+        source
+            .known_qualified_symbols
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains("DatabaseLink`SQLSelect")
+    });
+
+    let builtin = HashSet::new();
+    let user = HashSet::new();
+    let known = source
+        .known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        style_of_with_known("SQLSelect", &builtin, &user, Some(&known), "SQLSelect"),
+        test_styles().user_symbol
+    );
+}
+
+#[test]
+fn highlighter_colors_precise_package_variable_from_completion() {
+    let backend = FakeBackend {
+        symbols: HashMap::from([(
+            "DatabaseLink`$SQLTimeout".to_string(),
+            vec![CompletionItem {
+                value: "$SQLTimeout".to_string(),
+                kind: CompletionKind::Symbol,
+                frequency: None,
+                context: Some("DatabaseLink`".to_string()),
+            }],
+        )]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let lookup = source.highlighter_lookup();
+    lookup.request("DatabaseLink`$SQLTimeout");
+    wait_until(|| {
+        source
+            .known_qualified_symbols
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains("DatabaseLink`$SQLTimeout")
+    });
+
+    let builtin = HashSet::new();
+    let user = HashSet::new();
+    let known = source
+        .known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let text = "DatabaseLink`$SQLTimeout + DatabaseLink`$Other";
+    assert_eq!(
+        style_of_with_known(
+            text,
+            &builtin,
+            &user,
+            Some(&known),
+            "DatabaseLink`$SQLTimeout"
+        ),
+        test_styles().user_symbol
+    );
+    assert_eq!(
+        style_of_with_known(text, &builtin, &user, Some(&known), "DatabaseLink`$Other"),
+        nu_ansi_term::Style::new()
+    );
 }

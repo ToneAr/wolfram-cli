@@ -206,6 +206,7 @@ pub(crate) fn user_completion_names(input: &str) -> Vec<String> {
             if let Some((context, short)) = name.rsplit_once('`') {
                 names.push(format!("{context}`"));
                 if !short.is_empty() {
+                    names.push(name.clone());
                     names.push(short.to_string());
                 }
             } else {
@@ -245,6 +246,21 @@ pub(crate) fn context_names(input: &str) -> Vec<String> {
 
 pub(crate) fn is_context_name(name: &str) -> bool {
     name.ends_with('`') && name.chars().all(is_symbol_char)
+}
+
+pub(crate) fn loaded_context_names(input: &str) -> Vec<String> {
+    input
+        .split("<<")
+        .skip(1)
+        .filter_map(|rest| {
+            let context: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|ch| is_symbol_char(*ch))
+                .collect();
+            is_context_name(&context).then_some(context)
+        })
+        .collect()
 }
 
 pub(crate) fn option_context(line: &str, pos: usize) -> Option<String> {

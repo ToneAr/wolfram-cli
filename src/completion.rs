@@ -196,6 +196,7 @@ fn spawn_completion_worker(
     backend: Arc<dyn KernelBackend>,
     symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
     options_cache: AsyncCache<String, Vec<String>>,
+    known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
 ) -> mpsc::Sender<CompletionJob> {
     let (sender, receiver) = mpsc::channel::<CompletionJob>();
     thread::spawn(move || {
@@ -203,7 +204,13 @@ fn spawn_completion_worker(
             for job in
                 coalesced_completion_jobs(first_job, &receiver, &symbols_cache, &options_cache)
             {
-                process_completion_job(&backend, &symbols_cache, &options_cache, job);
+                process_completion_job(
+                    &backend,
+                    &symbols_cache,
+                    &options_cache,
+                    &known_qualified_symbols,
+                    job,
+                );
             }
         }
     });
@@ -258,6 +265,7 @@ fn process_completion_job(
     backend: &Arc<dyn KernelBackend>,
     symbols_cache: &AsyncCache<String, Vec<CompletionItem>>,
     options_cache: &AsyncCache<String, Vec<String>>,
+    known_qualified_symbols: &Arc<Mutex<HashSet<String>>>,
     job: CompletionJob,
 ) {
     match job {
@@ -274,6 +282,7 @@ fn process_completion_job(
                 start.elapsed(),
                 format!("prefix={prefix:?} count={}", items.len()),
             );
+            remember_known_qualified_symbols(known_qualified_symbols, &items);
             symbols_cache.insert(prefix, epoch, items);
         }
         CompletionJob::Options { head, epoch } => {
@@ -390,11 +399,20 @@ fn process_detail_job(
 pub(crate) struct CompletionSource {
     pub(crate) epoch: Arc<AtomicU64>,
     pub(crate) user_symbols: Arc<Mutex<HashSet<String>>>,
+    pub(crate) known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
     job_sender: mpsc::Sender<CompletionJob>,
     detail_job_sender: mpsc::Sender<CompletionDetailJob>,
     pub(crate) symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
     pub(crate) details_cache: AsyncCache<String, CompletionItemDetails>,
     pub(crate) options_cache: AsyncCache<String, Vec<String>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SymbolHighlighterLookup {
+    epoch: Arc<AtomicU64>,
+    job_sender: mpsc::Sender<CompletionJob>,
+    symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
+    known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
 }
 
 impl CompletionSource {
@@ -414,16 +432,19 @@ impl CompletionSource {
         let symbols_cache = AsyncCache::new();
         let details_cache = AsyncCache::new();
         let options_cache = AsyncCache::new();
+        let known_qualified_symbols = Arc::new(Mutex::new(HashSet::new()));
         let job_sender = spawn_completion_worker(
             backend.clone(),
             symbols_cache.clone(),
             options_cache.clone(),
+            known_qualified_symbols.clone(),
         );
         let detail_job_sender =
             spawn_completion_detail_worker(backend.clone(), details_cache.clone());
         Self {
             epoch,
             user_symbols,
+            known_qualified_symbols,
             job_sender,
             detail_job_sender,
             symbols_cache,
@@ -434,6 +455,15 @@ impl CompletionSource {
 
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn highlighter_lookup(&self) -> SymbolHighlighterLookup {
+        SymbolHighlighterLookup {
+            epoch: self.epoch.clone(),
+            job_sender: self.job_sender.clone(),
+            symbols_cache: self.symbols_cache.clone(),
+            known_qualified_symbols: self.known_qualified_symbols.clone(),
+        }
     }
 
     /// Never touches the kernel directly. Built-ins resolve locally and
@@ -496,6 +526,7 @@ impl CompletionSource {
                 format!("prefix={prefix:?} count={}", items.len()),
             );
         }
+        self.remember_known_qualified_symbols(&items);
 
         profile_duration(
             "source.symbols",
@@ -503,6 +534,10 @@ impl CompletionSource {
             format!("prefix={prefix:?} count={}", items.len()),
         );
         items
+    }
+
+    fn remember_known_qualified_symbols(&self, items: &[CompletionItem]) {
+        remember_known_qualified_symbols(&self.known_qualified_symbols, items);
     }
 
     fn wait_for_symbols(
@@ -543,6 +578,7 @@ impl CompletionSource {
 
         symbols
             .iter()
+            .filter(|symbol| !symbol.contains('`') || symbol.ends_with('`'))
             .filter(|symbol| fuzzy_matches(symbol, prefix))
             .map(|symbol| CompletionItem {
                 value: symbol.clone(),
@@ -631,6 +667,72 @@ impl CompletionSource {
     }
 }
 
+impl SymbolHighlighterLookup {
+    pub(crate) fn request(&self, symbol: &str) {
+        if symbol.starts_with("System`") {
+            return;
+        }
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        let prefix = symbol_highlighter_query_prefix(symbol);
+        match self.symbols_cache.poll_or_claim(&prefix, epoch) {
+            CachePoll::Ready(items) => {
+                remember_known_qualified_symbols(&self.known_qualified_symbols, &items);
+            }
+            CachePoll::Spawn => {
+                let _ = self
+                    .job_sender
+                    .send(CompletionJob::Symbols { prefix, epoch });
+            }
+            CachePoll::Pending => {}
+        }
+    }
+
+    pub(crate) fn prefetch(&self, symbol: &str, wait_timeout: Duration) {
+        self.request(symbol);
+        if wait_timeout.is_zero() {
+            return;
+        }
+
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        let prefix = symbol_highlighter_query_prefix(symbol);
+        let deadline = Instant::now() + wait_timeout;
+        loop {
+            if let Some(items) = self.symbols_cache.ready(&prefix, epoch) {
+                remember_known_qualified_symbols(&self.known_qualified_symbols, &items);
+                return;
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                return;
+            }
+            thread::sleep(Duration::from_millis(2).min(deadline - now));
+        }
+    }
+}
+
+fn remember_known_qualified_symbols(
+    known_qualified_symbols: &Arc<Mutex<HashSet<String>>>,
+    items: &[CompletionItem],
+) {
+    let mut known_symbols = known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for item in items {
+        if item.kind != CompletionKind::Symbol {
+            continue;
+        }
+        let symbol = if item.value.contains('`') {
+            item.value.clone()
+        } else if let Some(context) = &item.context {
+            format!("{context}{}", item.value)
+        } else {
+            continue;
+        };
+        known_symbols.insert(symbol);
+    }
+}
+
 pub(crate) fn symbol_query_prefix(prefix: &str) -> String {
     if let Some(context_end) = prefix.rfind('`') {
         return prefix[..=context_end].to_string();
@@ -641,6 +743,14 @@ pub(crate) fn symbol_query_prefix(prefix: &str) -> String {
         .nth(2)
         .map_or(prefix, |(idx, _)| &prefix[..idx])
         .to_string()
+}
+
+pub(crate) fn symbol_highlighter_query_prefix(symbol: &str) -> String {
+    if symbol.contains('`') && !symbol.starts_with("System`") {
+        symbol.to_string()
+    } else {
+        symbol_query_prefix(symbol)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
