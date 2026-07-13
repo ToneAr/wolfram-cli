@@ -863,6 +863,8 @@ fn packet_is_terminal(packet: &KernelPacket) -> bool {
     )
 }
 
+
+
 fn input_request_prompt(packets: &[KernelPacket]) -> String {
     packets
         .iter()
@@ -879,16 +881,20 @@ fn next_input_prompt_after_evaluation(
     previous_prompt: Option<&str>,
     packets: &[KernelPacket],
 ) -> Option<String> {
-    last_input_name(packets)
+    next_input_name_after_result(packets)
         .or_else(|| last_output_name(packets).and_then(next_input_prompt_from_output_name))
         .or_else(|| previous_prompt.and_then(increment_input_prompt))
 }
 
-fn last_input_name(packets: &[KernelPacket]) -> Option<String> {
-    packets.iter().rev().find_map(|packet| match packet {
-        KernelPacket::InputName(text) if !text.trim().is_empty() => Some(text.clone()),
-        _ => None,
-    })
+fn next_input_name_after_result(packets: &[KernelPacket]) -> Option<String> {
+    let result_index = packets.iter().rposition(packet_is_terminal)?;
+    packets[result_index + 1..]
+        .iter()
+        .rev()
+        .find_map(|packet| match packet {
+            KernelPacket::InputName(text) if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        })
 }
 
 fn last_output_name(packets: &[KernelPacket]) -> Option<&str> {
@@ -1414,10 +1420,13 @@ mod tests {
         );
     }
 
+
+
     #[test]
-    fn next_input_prompt_uses_non_empty_input_name_packet() {
+    fn next_input_prompt_uses_non_empty_input_name_packet_after_result() {
         let packets = vec![
             KernelPacket::OutputName("Out[7]=".to_string()),
+            KernelPacket::ReturnText("2".to_string()),
             KernelPacket::InputName("In[8]:=".to_string()),
         ];
 
@@ -1428,9 +1437,35 @@ mod tests {
     }
 
     #[test]
-    fn next_input_prompt_falls_back_to_output_name_when_input_name_is_empty() {
+    fn next_input_prompt_ignores_an_internal_input_name_before_result() {
+        let packets = vec![KernelPacket::InputName("In[1]:=".to_string())];
+
+        assert_eq!(
+            next_input_prompt_after_evaluation(Some("In[7]:="), &packets),
+            Some("In[8]:=".to_string())
+        );
+    }
+
+    #[test]
+    fn next_input_prompt_ignores_input_name_packets_before_result() {
+        let packets = vec![
+            KernelPacket::InputName("In[1]:=".to_string()),
+            KernelPacket::Text("loaded file side effect\n".to_string()),
+            KernelPacket::ReturnText(String::new()),
+        ];
+
+        assert_eq!(
+            next_input_prompt_after_evaluation(Some("In[7]:="), &packets),
+            Some("In[8]:=".to_string())
+        );
+    }
+
+
+    #[test]
+    fn next_input_prompt_falls_back_to_output_name_when_post_result_input_name_is_empty() {
         let packets = vec![
             KernelPacket::OutputName("Out[7]=".to_string()),
+            KernelPacket::ReturnText("2".to_string()),
             KernelPacket::InputName(String::new()),
         ];
 
