@@ -174,15 +174,82 @@ EOF
     log "Created default config at $config_file"
 }
 
+glibc_version() {
+    if has_command getconf; then
+        getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}'
+    elif has_command ldd; then
+        ldd --version 2>/dev/null | awk 'NR == 1 {print $NF}'
+    else
+        printf '%s\n' ""
+    fi
+}
+
+version_ge() {
+    left_major="${1%%.*}"
+    left_rest="${1#*.}"
+    right_major="${2%%.*}"
+    right_rest="${2#*.}"
+    left_minor="${left_rest%%.*}"
+    right_minor="${right_rest%%.*}"
+
+    [ -n "$left_major" ] || return 1
+    [ -n "$left_minor" ] || left_minor=0
+
+    if [ "$left_major" -gt "$right_major" ]; then
+        return 0
+    fi
+    if [ "$left_major" -eq "$right_major" ] && [ "$left_minor" -ge "$right_minor" ]; then
+        return 0
+    fi
+    return 1
+}
+
+os_release_value() {
+    key="$1"
+    [ -f /etc/os-release ] || return 0
+    awk -F= -v key="$key" '
+        $1 == key {
+            value = $2
+            gsub(/^"|"$/, "", value)
+            print value
+            exit
+        }
+    ' /etc/os-release
+}
+
+linux_target_name() {
+    arch_part="$1"
+
+    [ "$arch_part" = "x86_64" ] || fail "unsupported CPU architecture: Linux releases require x86_64"
+
+    os_id="$(os_release_value ID)"
+    os_like="$(os_release_value ID_LIKE)"
+    version_id="$(os_release_value VERSION_ID)"
+    distro_tags=" $os_id $os_like "
+    distro_major="${version_id%%.*}"
+
+    case "$distro_tags" in
+        *" rhel "* | *" fedora "* | *" centos "*)
+            case "$distro_major" in
+                8) printf '%s\n' "linux-rhel8-x86_64"; return ;;
+                9) printf '%s\n' "linux-rhel9-x86_64"; return ;;
+            esac
+            ;;
+    esac
+
+    glibc="$(glibc_version)"
+    if [ -n "$glibc" ] && version_ge "$glibc" "2.39"; then
+        printf '%s\n' "linux-ubuntu24-x86_64"
+    elif [ -n "$glibc" ] && version_ge "$glibc" "2.34"; then
+        printf '%s\n' "linux-rhel9-x86_64"
+    else
+        printf '%s\n' "linux-rhel8-x86_64"
+    fi
+}
+
 target_name() {
     os="$(uname -s)"
     arch="$(uname -m)"
-
-    case "$os" in
-        Linux) os_part="linux" ;;
-        Darwin) os_part="macos" ;;
-        *) fail "unsupported operating system: $os" ;;
-    esac
 
     case "$arch" in
         x86_64 | amd64) arch_part="x86_64" ;;
@@ -190,7 +257,11 @@ target_name() {
         *) fail "unsupported CPU architecture: $arch" ;;
     esac
 
-    printf '%s-%s\n' "$os_part" "$arch_part"
+    case "$os" in
+        Linux) linux_target_name "$arch_part" ;;
+        Darwin) printf '%s-%s\n' "macos" "$arch_part" ;;
+        *) fail "unsupported operating system: $os" ;;
+    esac
 }
 
 download_file() {

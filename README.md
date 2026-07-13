@@ -315,12 +315,14 @@ GitHub Actions builds packaged binaries when a `v*` or `build*` tag is pushed. `
 
 Release builds run on GitHub-hosted runners. Because GitHub-hosted runners do not include Wolfram and `wstp-sys` links the target WSTP static library during `cargo build`, the workflow extracts the required `CompilerAdditions` from official Wolfram Engine artifacts before building:
 
-| Artifact         | Runner           | Rust target                | WSTP source                 |
-| ---------------- | ---------------- | -------------------------- | --------------------------- |
-| `linux-x86_64`   | `ubuntu-latest`  | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
-| `macos-x86_64`   | `macos-15-intel` | `x86_64-apple-darwin`      | Wolfram Engine macOS DMG    |
-| `macos-aarch64`  | `macos-15`       | `aarch64-apple-darwin`     | Wolfram Engine macOS DMG    |
-| `windows-x86_64` | `windows-latest` | `x86_64-pc-windows-msvc`   | Wolfram Engine Windows MSI  |
+| Artifact                 | Runner           | Build environment | Rust target                | WSTP source                 |
+| ------------------------ | ---------------- | ----------------- | -------------------------- | --------------------------- |
+| `linux-ubuntu24-x86_64`  | `ubuntu-latest`  | Native Ubuntu     | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
+| `linux-rhel8-x86_64`     | `ubuntu-latest`  | `rockylinux:8`    | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
+| `linux-rhel9-x86_64`     | `ubuntu-latest`  | `rockylinux:9`    | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
+| `macos-x86_64`           | `macos-15-intel` | Native macOS      | `x86_64-apple-darwin`      | Wolfram Engine macOS DMG    |
+| `macos-aarch64`          | `macos-15`       | Native macOS      | `aarch64-apple-darwin`     | Wolfram Engine macOS DMG    |
+| `windows-x86_64`         | `windows-latest` | Native Windows    | `x86_64-pc-windows-msvc`   | Wolfram Engine Windows MSI  |
 
 Locally, set `WSTP_COMPILER_ADDITIONS_DIRECTORY` if automatic discovery does not find the target's `SystemFiles/Links/WSTP/DeveloperKit/<SystemID>/CompilerAdditions` directory. Linux builds also need the system `uuid` library available for linking, for example the `uuid-dev` package on Debian/Ubuntu systems.
 

@@ -24,26 +24,42 @@ jobs:
             fail-fast: false
             matrix:
                 include:
-                    - name: linux-x86_64
+                    - name: linux-ubuntu24-x86_64
                       runner: ubuntu-latest
                       target: x86_64-unknown-linux-gnu
                       systemid: Linux-x86-64
                       archive: tar.gz
+                      build_container: ""
+                    - name: linux-rhel8-x86_64
+                      runner: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                      systemid: Linux-x86-64
+                      archive: tar.gz
+                      build_container: rockylinux:8
+                    - name: linux-rhel9-x86_64
+                      runner: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                      systemid: Linux-x86-64
+                      archive: tar.gz
+                      build_container: rockylinux:9
                     - name: macos-x86_64
                       runner: macos-15-intel
                       target: x86_64-apple-darwin
                       systemid: MacOSX-x86-64
                       archive: tar.gz
+                      build_container: ""
                     - name: macos-aarch64
                       runner: macos-15
                       target: aarch64-apple-darwin
                       systemid: MacOSX-ARM64
                       archive: tar.gz
+                      build_container: ""
                     - name: windows-x86_64
                       runner: windows-latest
                       target: x86_64-pc-windows-msvc
                       systemid: Windows-x86-64
                       archive: zip
+                      build_container: ""
 
         steps:
             - name: Checkout
@@ -60,12 +76,13 @@ jobs:
               run: Add-Content -Path $env:GITHUB_ENV -Value 'WOLFRAM_KERNEL=C:\nonexistent\WolframKernel.exe'
 
             - name: Install Rust toolchain
+              if: matrix.build_container == ''
               uses: dtolnay/rust-toolchain@stable
               with:
                   targets: ${{ matrix.target }}
 
             - name: Install Linux link dependencies
-              if: runner.os == 'Linux'
+              if: runner.os == 'Linux' && matrix.build_container == ''
               shell: bash
               run: |
                   set -euo pipefail
@@ -192,13 +209,39 @@ jobs:
                   Add-Content -Path $env:GITHUB_ENV -Value "WSTP_COMPILER_ADDITIONS_DIRECTORY=$($wstpDir.FullName)"
                   Write-Host "Using WSTP CompilerAdditions: $($wstpDir.FullName)"
 
-            - name: Build
+            - name: Build native
+              if: matrix.build_container == ''
               env:
                   RUSTFLAGS: -C strip=symbols
               run: cargo build --release --locked --target ${{ matrix.target }}
 
-            - name: Test
+            - name: Test native
+              if: matrix.build_container == ''
               run: cargo test --locked --target ${{ matrix.target }}
+
+            - name: Build and test Linux container
+              if: matrix.build_container != ''
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  docker run --rm \
+                    -e CARGO_TERM_COLOR=always \
+                    -e RUSTFLAGS='-C strip=symbols' \
+                    -e WOLFRAM_KERNEL=/nonexistent/WolframKernel \
+                    -e WSTP_COMPILER_ADDITIONS_DIRECTORY="$WSTP_COMPILER_ADDITIONS_DIRECTORY" \
+                    -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+                    -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+                    -w "$GITHUB_WORKSPACE" \
+                    ${{ matrix.build_container }} \
+                    sh -lc '
+                      set -euo pipefail
+                      dnf install -y gcc gcc-c++ make curl tar gzip libuuid-devel
+                      curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+                      . "$HOME/.cargo/env"
+                      rustup target add ${{ matrix.target }}
+                      cargo build --release --locked --target ${{ matrix.target }}
+                      cargo test --locked --target ${{ matrix.target }}
+                    '
 
             - name: Package Unix
               if: matrix.archive == 'tar.gz' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/build'))

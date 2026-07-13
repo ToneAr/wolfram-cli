@@ -400,24 +400,73 @@ executableName[] :=
 		$binaryName
 	];
 
-targetName[] :=
-	Module[{osPart, id, archPart},
-		osPart =
-			Switch[$OperatingSystem,
-				"Unix",
-					"linux",
-				"MacOSX",
-					"macos",
-				"Windows",
-					"windows",
-				_,
-					fail[
-						StringJoin[
-							"unsupported operating system: ",
-							ToString[$OperatingSystem]
-						]
-					]
+glibcVersion[] :=
+	Module[{result, parts},
+		If[!commandAvailableQ["getconf"], Return[""]];
+		result = RunProcess[{"getconf", "GNU_LIBC_VERSION"}];
+		If[result["ExitCode"] =!= 0, Return[""]];
+		parts = StringSplit[StringTrim[result["StandardOutput"]]];
+		If[Length[parts] < 2, "", Last[parts]]
+	];
+
+versionGEQ[left_String, right_String] :=
+	Module[{leftParts, rightParts},
+		leftParts = ToExpression /@ StringSplit[left, "."];
+		rightParts = ToExpression /@ StringSplit[right, "."];
+		leftParts = PadRight[Take[leftParts, UpTo[2]], 2, 0];
+		rightParts = PadRight[Take[rightParts, UpTo[2]], 2, 0];
+		OrderedQ[{rightParts, leftParts}]
+	];
+
+osReleaseData[] :=
+	Module[{path, lines, pairs},
+		path = "/etc/os-release";
+		If[!FileExistsQ[path], Return[<||>]];
+		lines = StringSplit[Import[path, "Text"], "\n"];
+		pairs =
+			Cases[
+				StringSplit[#, "=", 2]& /@ lines,
+				{key_, value_} :> key -> StringTrim[value, "\""]
 			];
+		Association[pairs]
+	];
+
+linuxTargetName[archPart_String] :=
+	Module[{release, tags, major, glibc},
+		If[archPart =!= "x86_64",
+			fail["unsupported CPU architecture: Linux releases require x86_64"]
+		];
+		release = osReleaseData[];
+		tags =
+			StringJoin[
+				" ",
+				ToLowerCase[Lookup[release, "ID", ""]],
+				" ",
+				ToLowerCase[Lookup[release, "ID_LIKE", ""]],
+				" "
+			];
+		major = First[StringSplit[Lookup[release, "VERSION_ID", ""], "."], ""];
+		If[StringContainsQ[tags, " rhel " | " fedora " | " centos "],
+			Switch[major,
+				"8",
+					Return["linux-rhel8-x86_64"],
+				"9",
+					Return["linux-rhel9-x86_64"]
+			]
+		];
+		glibc = glibcVersion[];
+		Which[
+			glibc =!= "" && versionGEQ[glibc, "2.39"],
+				"linux-ubuntu24-x86_64",
+			glibc =!= "" && versionGEQ[glibc, "2.34"],
+				"linux-rhel9-x86_64",
+			True,
+				"linux-rhel8-x86_64"
+		]
+	];
+
+targetName[] :=
+	Module[{id, archPart},
 		id =
 			ToLowerCase[
 				StringJoin[ ToString[$SystemID], " ", ToString[$ProcessorType]]
@@ -436,12 +485,29 @@ targetName[] :=
 						]
 					]
 			];
-		If[osPart === "windows" && archPart =!= "x86_64",
-			fail[
-				"unsupported CPU architecture: Windows releases require x86_64"
-			]
-		];
-		StringJoin[ osPart, "-", archPart]
+		Switch[$OperatingSystem,
+			"Unix",
+				linuxTargetName[archPart],
+			"MacOSX",
+				StringJoin[ "macos-", archPart],
+			"Windows",
+				If[archPart =!= "x86_64",
+					fail[
+						StringJoin[
+							"unsupported CPU architecture: Windows releases ",
+							"require x86_64"
+						]
+					]
+				];
+				"windows-x86_64",
+			_,
+				fail[
+					StringJoin[
+						"unsupported operating system: ",
+						ToString[$OperatingSystem]
+					]
+				]
+		]
 	];
 
 archiveName[target_String] :=
