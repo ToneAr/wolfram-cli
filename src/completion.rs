@@ -578,27 +578,29 @@ impl CompletionSource {
 
         let epoch = self.epoch();
         let mut items = self.local_user_symbols_for_prefix(prefix);
-        let query_prefix = symbol_query_prefix(prefix);
-        let cache_start = Instant::now();
-        items.extend(
-            match self.symbols_cache.poll_or_claim(&query_prefix, epoch) {
-                CachePoll::Ready(items) => items,
-                CachePoll::Pending => self.wait_for_symbols(&query_prefix, epoch, wait_timeout),
-                CachePoll::Spawn => {
-                    let _ = self.job_sender.send(CompletionJob::Symbols {
-                        prefix: query_prefix.clone(),
-                        epoch,
-                    });
-                    self.wait_for_symbols(&query_prefix, epoch, wait_timeout)
-                }
-            },
-        );
-        profile_duration_with("source.symbols.kernel_cache", cache_start.elapsed(), || {
-            format!(
-                "prefix={prefix:?} query_prefix={query_prefix:?} count={}",
-                items.len()
-            )
-        });
+        if should_query_kernel_for_symbol_prefix(prefix) {
+            let query_prefix = symbol_query_prefix(prefix);
+            let cache_start = Instant::now();
+            items.extend(
+                match self.symbols_cache.poll_or_claim(&query_prefix, epoch) {
+                    CachePoll::Ready(items) => items,
+                    CachePoll::Pending => self.wait_for_symbols(&query_prefix, epoch, wait_timeout),
+                    CachePoll::Spawn => {
+                        let _ = self.job_sender.send(CompletionJob::Symbols {
+                            prefix: query_prefix.clone(),
+                            epoch,
+                        });
+                        self.wait_for_symbols(&query_prefix, epoch, wait_timeout)
+                    }
+                },
+            );
+            profile_duration_with("source.symbols.kernel_cache", cache_start.elapsed(), || {
+                format!(
+                    "prefix={prefix:?} query_prefix={query_prefix:?} count={}",
+                    items.len()
+                )
+            });
+        }
 
         if !prefix.contains('`') {
             let builtin_start = Instant::now();
@@ -744,7 +746,7 @@ impl CompletionSource {
 
 impl SymbolHighlighterLookup {
     pub(crate) fn request(&self, symbol: &str) {
-        if symbol.starts_with("System`") {
+        if symbol.starts_with("System`") || !should_query_kernel_for_symbol_prefix(symbol) {
             return;
         }
         let epoch = self.epoch.load(Ordering::Relaxed);
@@ -826,6 +828,14 @@ fn remember_known_qualified_symbols(
         };
         known_symbols.insert(symbol);
     }
+}
+
+pub(crate) fn should_query_kernel_for_symbol_prefix(prefix: &str) -> bool {
+    if prefix.contains('`') {
+        return true;
+    }
+
+    prefix.chars().count() >= 3
 }
 
 pub(crate) fn symbol_query_prefix(prefix: &str) -> String {

@@ -235,32 +235,38 @@ fn run_settings_menu(theme: &ThemeHandle, use_color: bool) -> Result<()> {
                 "Disable the popup completion menu",
                 |command| &mut command.no_completion_menu,
             )?,
-            "8" | "linkconnect" => configure_bool(
+            "8" | "no-tree-sitter-highlighting" | "tree-sitter" | "semantic" => configure_bool(
+                &mut config,
+                "no-tree-sitter-highlighting",
+                "Disable tree-sitter semantic highlighting overlays",
+                |command| &mut command.no_tree_sitter_highlighting,
+            )?,
+            "9" | "linkconnect" => configure_bool(
                 &mut config,
                 "linkconnect",
                 "Connect to an existing WSTP link on startup",
                 |command| &mut command.linkconnect,
             )?,
-            "9" | "linkname" => configure_string(
+            "10" | "linkname" => configure_string(
                 &mut config,
                 "linkname",
                 "WSTP link name to use with linkconnect",
                 |command| &mut command.linkname,
             )?,
-            "10" | "linkprotocol" => configure_link_protocol(&mut config)?,
-            "11" | "linkmode" => configure_string(
+            "11" | "linkprotocol" => configure_link_protocol(&mut config)?,
+            "12" | "linkmode" => configure_string(
                 &mut config,
                 "linkmode",
                 "WSTP link mode for launching or connecting",
                 |command| &mut command.linkmode,
             )?,
-            "12" | "linkoptions" => configure_u32(
+            "13" | "linkoptions" => configure_u32(
                 &mut config,
                 "linkoptions",
                 "WSTP link options integer",
                 |command| &mut command.linkoptions,
             )?,
-            "13" | "linkinit" => configure_bool(
+            "14" | "linkinit" => configure_bool(
                 &mut config,
                 "linkinit",
                 "Initialize linkoptions=4 connected kernels in Wolfie's launch directory",
@@ -325,24 +331,28 @@ fn print_settings_menu(config: &UserConfig, theme: &ThemeHandle) {
             option_label(config.command.no_completion_menu),
         ),
         (
-            "8.  linkconnect           ",
+            "8.  no-tree-sitter        ",
+            option_label(config.command.no_tree_sitter_highlighting),
+        ),
+        (
+            "9.  linkconnect           ",
             option_label(config.command.linkconnect),
         ),
         (
-            "9.  linkname              ",
+            "10. linkname              ",
             string_label(config.command.linkname.as_deref()),
         ),
         (
-            "10. linkprotocol          ",
+            "11. linkprotocol          ",
             string_label(config.command.linkprotocol.as_deref()),
         ),
         (
-            "11. linkmode              ",
+            "12. linkmode              ",
             string_label(config.command.linkmode.as_deref()),
         ),
-        ("12. linkoptions           ", linkoptions.as_str()),
+        ("13. linkoptions           ", linkoptions.as_str()),
         (
-            "13. linkinit              ",
+            "14. linkinit              ",
             option_label(config.command.linkinit),
         ),
     ];

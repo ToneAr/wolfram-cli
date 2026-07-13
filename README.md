@@ -67,7 +67,15 @@ For underpowered or memory-constrained servers, use the opt-in lightweight REPL 
 wolfie --lightweight
 ```
 
-This preserves evaluation, prompts, themes, syntax validation, highlighting, shell escapes, and REPL commands while disabling persistent history, dynamic kernel-backed completion workers/caches/queries, and background kernel warm-up. Normal `wolfie` behavior is unchanged when the flag is absent. The profile can also be saved as `"lightweight": true` under `command` in `config.json`.
+This preserves evaluation, prompts, themes, syntax validation, cheap highlighting, shell escapes, and REPL commands while disabling persistent history, dynamic kernel-backed completion workers/caches/queries, tree-sitter semantic highlighting, and background kernel warm-up. Normal `wolfie` behavior is unchanged when the flag is absent. The profile can also be saved as `"lightweight": true` under `command` in `config.json`.
+
+To keep the normal REPL features but skip tree-sitter semantic highlighting and parsing work, use:
+
+```sh
+wolfie --no-tree-sitter-highlighting
+```
+
+This can also be saved as `"no-tree-sitter-highlighting": true` under `command` in `config.json`.
 
 Evaluate one expression and exit:
 
@@ -190,7 +198,7 @@ wolfie --completion-ghost-text
 wolfie --no-completion-menu
 ```
 
-The same defaults can be set in `config.json` under `command` with `completion-ghost-text` and `no-completion-menu`. The legacy `no-completion-ghost-text` key is still accepted for disabling a previously enabled ghost-text default. `--no-completion-menu` only hides the popup; use `--lightweight` when the completion workers, caches, highlighting queries, and kernel completion traffic must also be disabled.
+The same defaults can be set in `config.json` under `command` with `completion-ghost-text` and `no-completion-menu`. The legacy `no-completion-ghost-text` key is still accepted for disabling a previously enabled ghost-text default. `--no-completion-menu` only hides the popup; use `--lightweight` when the completion workers, caches, tree-sitter semantic highlighting, highlighting queries, and kernel completion traffic must also be disabled.
 
 ## Commands
 
@@ -245,6 +253,7 @@ wolfie --skip-config
 		"completion-ghost-text": false,
 		"no-completion-ghost-text": false,
 		"no-completion-menu": false,
+		"no-tree-sitter-highlighting": false,
 		"linkconnect": false,
 		"linkname": "my-link",
 		"linkprotocol": "SharedMemory",

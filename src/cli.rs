@@ -46,6 +46,10 @@ struct Args {
     #[arg(long = "no-completion-menu")]
     no_completion_menu: bool,
 
+    /// Disable tree-sitter semantic highlighting overlays.
+    #[arg(long = "no-tree-sitter-highlighting")]
+    no_tree_sitter_highlighting: bool,
+
     /// Ignore user config and use fresh in-memory defaults for this session.
     #[arg(long = "skip-config")]
     skip_config: bool,
@@ -110,6 +114,7 @@ struct EffectiveArgs {
     no_prompt: bool,
     no_completion_ghost_text: bool,
     no_completion_menu: bool,
+    no_tree_sitter_highlighting: bool,
     config_mode: ConfigMode,
     eval: Option<String>,
     link_connect: bool,
@@ -161,6 +166,7 @@ pub(crate) fn run() -> Result<()> {
                 dynamic_completion: !args.lightweight,
                 completion_ghost_text: !args.no_completion_ghost_text,
                 completion_menu: !args.no_completion_menu,
+                semantic_highlighting: !args.no_tree_sitter_highlighting,
                 history: !args.lightweight,
             },
         ),
@@ -325,6 +331,11 @@ fn effective_args(parsed: ParsedArgs, config: UserConfig) -> Result<EffectiveArg
         no_completion_menu: lightweight
             || args.no_completion_menu
             || command.no_completion_menu.unwrap_or(false),
+        no_tree_sitter_highlighting: lightweight
+            || args.no_color
+            || command.no_color.unwrap_or(false)
+            || args.no_tree_sitter_highlighting
+            || command.no_tree_sitter_highlighting.unwrap_or(false),
         eval: args.eval,
         link_connect,
         link_name: if link_connect {
@@ -508,6 +519,27 @@ mod tests {
         assert!(args.lightweight);
         assert!(args.no_completion_ghost_text);
         assert!(args.no_completion_menu);
+        assert!(args.no_tree_sitter_highlighting);
+    }
+
+    #[test]
+    fn parses_tree_sitter_highlighting_flag() {
+        let args = effective(
+            Args::try_parse_from(["wolfie", "--no-tree-sitter-highlighting"])
+                .expect("tree-sitter highlighting flag should parse"),
+        );
+
+        assert!(args.no_tree_sitter_highlighting);
+    }
+
+    #[test]
+    fn no_color_disables_tree_sitter_highlighting_processing() {
+        let args = effective(
+            Args::try_parse_from(["wolfie", "--no-color"])
+                .expect("no-color args should parse"),
+        );
+
+        assert!(args.no_tree_sitter_highlighting);
     }
 
     #[test]
@@ -797,6 +829,7 @@ mod tests {
                     no_prompt: Some(true),
                     no_completion_ghost_text: Some(true),
                     no_completion_menu: Some(true),
+                    no_tree_sitter_highlighting: Some(true),
                     linkconnect: Some(true),
                     linkname: Some("config-link".to_string()),
                     linkprotocol: Some("TCPIP".to_string()),
@@ -811,6 +844,7 @@ mod tests {
         assert!(args.no_prompt);
         assert!(args.no_completion_ghost_text);
         assert!(args.no_completion_menu);
+        assert!(args.no_tree_sitter_highlighting);
         let connection = connection(&args).expect("config defaults should be valid");
 
         match connection {
@@ -844,6 +878,7 @@ mod tests {
         assert!(args.lightweight);
         assert!(args.no_completion_ghost_text);
         assert!(args.no_completion_menu);
+        assert!(args.no_tree_sitter_highlighting);
     }
 
     #[test]
@@ -877,6 +912,7 @@ mod tests {
                     no_prompt: Some(true),
                     no_completion_ghost_text: Some(true),
                     no_completion_menu: Some(true),
+                    no_tree_sitter_highlighting: Some(true),
                     linkconnect: Some(true),
                     linkname: Some("config-link".to_string()),
                     linkprotocol: Some("TCPIP".to_string()),
@@ -892,6 +928,7 @@ mod tests {
         assert!(!args.no_prompt);
         assert!(args.no_completion_ghost_text);
         assert!(!args.no_completion_menu);
+        assert!(!args.no_tree_sitter_highlighting);
         assert!(!args.link_connect);
         let connection = connection(&args).expect("default args should launch a kernel");
         assert!(matches!(connection, KernelConnection::Launch { .. }));
@@ -908,6 +945,7 @@ mod tests {
                 "completion-ghost-text": true,
                 "no-completion-ghost-text": true,
                 "no-completion-menu": true,
+                "no-tree-sitter-highlighting": true,
                 "linkconnect": true,
                 "linkname": "config-link",
                 "linkprotocol": "SharedMemory",
@@ -925,6 +963,7 @@ mod tests {
         assert_eq!(config.command.completion_ghost_text, Some(true));
         assert_eq!(config.command.no_completion_ghost_text, Some(true));
         assert_eq!(config.command.no_completion_menu, Some(true));
+        assert_eq!(config.command.no_tree_sitter_highlighting, Some(true));
         assert_eq!(config.command.linkconnect, Some(true));
         assert_eq!(config.command.linkname.as_deref(), Some("config-link"));
         assert_eq!(config.command.linkprotocol.as_deref(), Some("SharedMemory"));

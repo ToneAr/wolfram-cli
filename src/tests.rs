@@ -1,6 +1,6 @@
 use crate::{
-    commands::*, completion::*, editor::*, highlighter::*, kernel::KernelStatus, theme::*, wl::*,
-    wolfram_syntax::*,
+    commands::*, completion::*, editor::*, highlighter::*, kernel::KernelStatus, theme::*,
+    tree_sitter_wolfram::debug_tree, wl::*, wolfram_syntax::*,
 };
 use anyhow::Result;
 use crossterm::event::{Event, KeyEvent};
@@ -301,6 +301,73 @@ fn symbol_completion_reuses_broader_query_prefixes() {
     assert_eq!(symbol_query_prefix("MyC"), "My");
     assert_eq!(symbol_query_prefix("MyContext`"), "MyContext`");
     assert_eq!(symbol_query_prefix("MyContext`foo"), "MyContext`");
+}
+
+#[test]
+fn short_unqualified_symbols_do_not_query_kernel_completion() {
+    assert!(!should_query_kernel_for_symbol_prefix("x"));
+    assert!(!should_query_kernel_for_symbol_prefix("xy"));
+    assert!(should_query_kernel_for_symbol_prefix("xyz"));
+    assert!(should_query_kernel_for_symbol_prefix("MyContext`x"));
+}
+
+#[test]
+fn completion_does_not_offer_kernel_symbols_for_tiny_unqualified_prefixes() {
+    let backend = FakeBackend {
+        symbols: HashMap::from([(
+            "xy".to_string(),
+            vec![CompletionItem {
+                value: "xyKernelSymbol".to_string(),
+                kind: CompletionKind::Symbol,
+                frequency: None,
+                context: Some("SomeContext`".to_string()),
+            }],
+        )]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+
+    let symbols = source.symbols_for_prefix_wait("xy", Duration::from_millis(100));
+
+    assert!(!symbols.iter().any(|item| item.value == "xyKernelSymbol"));
+}
+
+#[test]
+fn highlighter_lookup_does_not_query_kernel_for_tiny_unqualified_symbols() {
+    let backend = FakeBackend {
+        symbols: HashMap::from([(
+            "xy".to_string(),
+            vec![CompletionItem {
+                value: "xyKernelSymbol".to_string(),
+                kind: CompletionKind::Symbol,
+                frequency: None,
+                context: Some("SomeContext`".to_string()),
+            }],
+        )]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+
+    source.highlighter_lookup().request("xy");
+    thread::sleep(Duration::from_millis(20));
+
+    let known = source
+        .known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(known.is_empty());
 }
 
 #[test]
@@ -1620,6 +1687,12 @@ fn highlighted_fragments(text: &str) -> Vec<(nu_ansi_term::Style, String)> {
     highlight_wolfram_text(text, test_styles(), None, None, None, None).buffer
 }
 
+fn highlighted_fragments_without_known_symbols(text: &str) -> Vec<(nu_ansi_term::Style, String)> {
+    let builtin = HashSet::new();
+    let user = HashSet::new();
+    highlight_wolfram_text(text, test_styles(), Some(&builtin), Some(&user), None, None).buffer
+}
+
 fn highlighted_fragments_at_cursor(
     text: &str,
     cursor: usize,
@@ -1634,12 +1707,222 @@ fn highlighted_text_at_cursor(text: &str, cursor: usize) -> String {
         .collect()
 }
 
+fn fragment_style_count(
+    fragments: &[(nu_ansi_term::Style, String)],
+    style: nu_ansi_term::Style,
+    text: &str,
+) -> usize {
+    fragments
+        .iter()
+        .filter(|(fragment_style, fragment)| *fragment_style == style && fragment == text)
+        .count()
+}
+
+fn style_of_fragment_containing(
+    fragments: &[(nu_ansi_term::Style, String)],
+    text: &str,
+) -> nu_ansi_term::Style {
+    fragments
+        .iter()
+        .find(|(_, fragment)| fragment.contains(text))
+        .map(|(style, _)| *style)
+        .unwrap_or_else(|| panic!("fragment containing {text:?} not found"))
+}
+
+#[test]
+fn default_semantic_styles_are_distinct_from_defined_symbol_styles() {
+    for theme in BuiltinTheme::ALL {
+        if theme == BuiltinTheme::Plain {
+            continue;
+        }
+        let styles = theme.styles();
+        assert_ne!(
+            styles.undefined_symbol, styles.user_symbol,
+            "{} undefined symbol style must not look like a defined user symbol",
+            theme.name()
+        );
+        assert_ne!(
+            styles.semantic_local_variable, styles.user_symbol,
+            "{} semantic local style must not look like a defined user symbol",
+            theme.name()
+        );
+        assert_ne!(
+            styles.semantic_pattern_variable, styles.user_symbol,
+            "{} semantic pattern style must not look like a defined user symbol",
+            theme.name()
+        );
+    }
+
+    let dark = BuiltinTheme::Dark.styles();
+    assert_eq!(
+        dark.semantic_local_variable,
+        nu_ansi_term::Style::new()
+            .fg(nu_ansi_term::Color::Fixed(45))
+            .underline()
+    );
+    assert_eq!(
+        dark.semantic_pattern_variable,
+        nu_ansi_term::Style::new()
+            .fg(nu_ansi_term::Color::Fixed(177))
+            .italic()
+    );
+}
+
+#[test]
+fn highlighter_colors_nonsemantic_undefined_symbols_with_undefined_style() {
+    let builtin = HashSet::new();
+    let user = HashSet::new();
+    let fragments = highlight_wolfram_text(
+        "undefined + Module[{x}, x] + f[y_]",
+        test_styles(),
+        Some(&builtin),
+        Some(&user),
+        None,
+        None,
+    )
+    .buffer;
+    let styles = test_styles();
+
+    assert_eq!(
+        style_of_fragment_containing(&fragments, "undefined"),
+        styles.undefined_symbol
+    );
+    assert_eq!(fragment_style_count(&fragments, styles.semantic_local_variable, "x"), 2);
+    assert_eq!(fragment_style_count(&fragments, styles.semantic_pattern_variable, "y"), 1);
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "undefined"), 0);
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "x"), 0);
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "y"), 0);
+}
+
+#[test]
+fn highlighter_separates_undefined_semantic_defined_and_system_symbols() {
+    let builtin: HashSet<String> = ["SystemThing".to_string()].into_iter().collect();
+    let user: HashSet<String> = ["defined".to_string()].into_iter().collect();
+    let fragments = highlight_wolfram_text(
+        "undefined + defined + SystemThing + Module[{x}, x] + f[y_]",
+        test_styles(),
+        Some(&builtin),
+        Some(&user),
+        None,
+        None,
+    )
+    .buffer;
+    let styles = test_styles();
+
+    assert_eq!(
+        style_of_fragment_containing(&fragments, "undefined"),
+        styles.undefined_symbol
+    );
+    assert_eq!(
+        fragments
+            .iter()
+            .find(|(_, fragment)| fragment == "defined")
+            .map(|(style, _)| *style),
+        Some(styles.user_symbol)
+    );
+    assert_eq!(
+        style_of_fragment_containing(&fragments, "SystemThing"),
+        styles.builtin_symbol
+    );
+    assert_eq!(fragment_style_count(&fragments, styles.semantic_local_variable, "x"), 2);
+    assert_eq!(fragment_style_count(&fragments, styles.semantic_pattern_variable, "y"), 1);
+
+    assert_ne!(styles.undefined_symbol, styles.user_symbol);
+    assert_ne!(styles.semantic_local_variable, styles.user_symbol);
+    assert_ne!(styles.semantic_pattern_variable, styles.user_symbol);
+}
+
 #[test]
 fn highlighter_colors_builtin_symbols() {
     let builtin: HashSet<String> = ["Plot".to_string()].into_iter().collect();
     let user: HashSet<String> = HashSet::new();
     let style = style_of("Plot[x]", &builtin, &user, "Plot");
     assert_eq!(style, test_styles().builtin_symbol);
+}
+
+#[test]
+fn tree_sitter_semantic_highlighter_marks_module_locals() {
+    let fragments = highlighted_fragments_without_known_symbols("Module[{x, y = 1}, x + y + z]");
+    let styles = test_styles();
+
+    assert!(debug_tree("Module[{x, y = 1}, x + y + z]").is_some());
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_local_variable, "x"),
+        2
+    );
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_local_variable, "y"),
+        2
+    );
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_local_variable, "z"),
+        0
+    );
+}
+
+#[test]
+fn tree_sitter_semantic_highlighter_marks_pattern_names() {
+    let fragments = highlighted_fragments_without_known_symbols("f[x_, y_Integer] := x + y");
+    let styles = test_styles();
+
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_pattern_variable, "x"),
+        1
+    );
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_pattern_variable, "y"),
+        1
+    );
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "x"), 0);
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "y"), 0);
+}
+
+#[test]
+fn kernel_symbol_highlighting_takes_precedence_over_tree_sitter_semantics() {
+    let builtin: HashSet<String> = ["Module".to_string(), "Integer".to_string()]
+        .into_iter()
+        .collect();
+    let user: HashSet<String> = ["x".to_string(), "y".to_string()].into_iter().collect();
+    let fragments = highlight_wolfram_text(
+        "Module[{x}, x] + f[y_Integer]",
+        test_styles(),
+        Some(&builtin),
+        Some(&user),
+        None,
+        None,
+    )
+    .buffer;
+    let styles = test_styles();
+
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "x"), 2);
+    assert_eq!(fragment_style_count(&fragments, styles.user_symbol, "y"), 1);
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_local_variable, "x"),
+        0
+    );
+    assert_eq!(
+        fragment_style_count(&fragments, styles.semantic_pattern_variable, "y"),
+        0
+    );
+}
+
+#[test]
+fn highlighter_can_disable_tree_sitter_semantics() {
+    let highlighter = WolframHighlighter::new(
+        builtin_symbol_set(),
+        test_user_symbols(),
+        None,
+        None,
+        ThemeHandle::builtin(Theme::dark()),
+        Arc::new(AtomicBool::new(false)),
+        false,
+    );
+    let fragments = highlighter.highlight("Module[{x}, x]", 14).buffer;
+
+    assert_eq!(
+        fragment_style_count(&fragments, test_styles().semantic_local_variable, "x"),
+        0
+    );
 }
 
 #[test]
@@ -1693,6 +1976,7 @@ fn highlighter_runs_without_dynamic_completion_lookup() {
         None,
         ThemeHandle::builtin(Theme::dark()),
         Arc::new(AtomicBool::new(false)),
+        true,
     );
 
     let highlighted = highlighter.highlight("UnknownPackage`symbol", 21);
@@ -1715,6 +1999,7 @@ fn highlighter_tracks_shell_escape_prompt_state() {
         Some(source.highlighter_lookup()),
         ThemeHandle::builtin(Theme::dark()),
         shell_prompt_hidden.clone(),
+        true,
     );
 
     highlighter.highlight(":!echo ok", 2);
@@ -1836,11 +2121,11 @@ fn highlighter_colors_symbols_outside_global_and_internal_contexts() {
 
     assert_eq!(
         style_of(text, &builtin, &user, "Global`x"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
     assert_eq!(
         style_of(text, &builtin, &user, "Internal`x"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
     assert_eq!(
         style_of(text, &builtin, &user, "OtherContext`x"),
@@ -1848,7 +2133,7 @@ fn highlighter_colors_symbols_outside_global_and_internal_contexts() {
     );
     assert_eq!(
         style_of(text, &builtin, &user, "OtherContext`unknown"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
 }
 
@@ -1896,7 +2181,7 @@ fn highlighter_colors_exact_custom_context_symbols_from_completion() {
     );
     assert_eq!(
         style_of_with_known(text, &builtin, &user, Some(&known), "OtherContext`unknown"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
 }
 
@@ -1993,7 +2278,7 @@ fn highlighter_colors_precise_package_variable_from_completion() {
     );
     assert_eq!(
         style_of_with_known(text, &builtin, &user, Some(&known), "DatabaseLink`$Other"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
 }
 
@@ -2037,6 +2322,7 @@ fn typing_hot_path_benchmark() {
         Some(source.highlighter_lookup()),
         theme,
         Arc::new(AtomicBool::new(false)),
+        true,
     );
 
     let line = "myFunc[alpha_] := ListLinePlot[Table[alpha x, {x, 0, 10}]] + custom`thing";

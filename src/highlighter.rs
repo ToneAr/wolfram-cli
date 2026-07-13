@@ -12,6 +12,7 @@ use reedline::{Highlighter, StyledText};
 use crate::{
     completion::{SymbolHighlighterLookup, command_is_on_path},
     theme::{Theme, ThemeHandle, ThemeStyles},
+    tree_sitter_wolfram,
     wolfram_syntax::{is_symbol_char, is_symbol_start, short_symbol_name},
 };
 
@@ -22,6 +23,7 @@ pub(crate) struct WolframHighlighter {
     symbol_lookup: Option<SymbolHighlighterLookup>,
     theme: ThemeHandle,
     shell_prompt_hidden: Arc<AtomicBool>,
+    tree_sitter_semantics: bool,
     snapshot: Mutex<SymbolSnapshot>,
 }
 
@@ -47,6 +49,7 @@ impl WolframHighlighter {
         symbol_lookup: Option<SymbolHighlighterLookup>,
         theme: ThemeHandle,
         shell_prompt_hidden: Arc<AtomicBool>,
+        tree_sitter_semantics: bool,
     ) -> Self {
         Self {
             builtin_symbols,
@@ -55,6 +58,7 @@ impl WolframHighlighter {
             symbol_lookup,
             theme,
             shell_prompt_hidden,
+            tree_sitter_semantics,
             snapshot: Mutex::new(SymbolSnapshot::default()),
         }
     }
@@ -105,6 +109,7 @@ impl Highlighter for WolframHighlighter {
                 .is_some()
                 .then_some(&snapshot.known_symbols),
             self.symbol_lookup.as_ref(),
+            self.tree_sitter_semantics,
         )
     }
 }
@@ -161,6 +166,7 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
         user_symbols,
         expanded_known_symbols.as_ref(),
         symbol_lookup,
+        true,
     )
 }
 
@@ -176,6 +182,7 @@ fn highlight_with_symbol_snapshot(
     user_symbols: Option<&HashSet<String>>,
     known_symbols: Option<&HashSet<String>>,
     symbol_lookup: Option<&SymbolHighlighterLookup>,
+    tree_sitter_semantics: bool,
 ) -> StyledText {
     if let Some(shell_escape_start) = shell_escape_start(line)
         && shell_escape_is_active(line, cursor, shell_escape_start)
@@ -269,7 +276,7 @@ fn highlight_with_symbol_snapshot(
             } else if is_user_defined || is_known_custom_symbol {
                 styles.user_symbol
             } else {
-                Style::new()
+                styles.undefined_symbol
             };
             flush_plain(&mut out, &mut plain);
             out.push((style, word.to_string()));
@@ -279,7 +286,11 @@ fn highlight_with_symbol_snapshot(
     }
 
     flush_plain(&mut out, &mut plain);
-    out
+    if tree_sitter_semantics {
+        tree_sitter_wolfram::enhance_highlighting(line, out, styles)
+    } else {
+        out
+    }
 }
 
 /// Consecutive unstyled characters (whitespace, operators, brackets) are

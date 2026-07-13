@@ -44,6 +44,7 @@ pub(crate) struct ReplFeatures {
     pub(crate) dynamic_completion: bool,
     pub(crate) completion_ghost_text: bool,
     pub(crate) completion_menu: bool,
+    pub(crate) semantic_highlighting: bool,
     pub(crate) history: bool,
 }
 
@@ -107,6 +108,7 @@ pub(crate) fn run_repl(
             symbol_lookup.clone(),
             theme.clone(),
             shell_prompt_hidden.clone(),
+            features.semantic_highlighting,
         )))
         .with_validator(Box::new(WolframValidator));
     if features.history {

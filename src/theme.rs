@@ -64,6 +64,9 @@ impl BuiltinTheme {
                 number: Style::new().fg(Color::Fixed(202)),
                 builtin_symbol: Style::new().fg(Color::Fixed(203)).bold(),
                 user_symbol: Style::new().fg(Color::Fixed(214)),
+                undefined_symbol: Style::new().fg(Color::Fixed(244)),
+                semantic_local_variable: Style::new().fg(Color::Fixed(45)).underline(),
+                semantic_pattern_variable: Style::new().fg(Color::Fixed(177)).italic(),
                 completion_command: Style::new().fg(Color::Fixed(202)).bold(),
                 completion_symbol: Style::new().fg(Color::Fixed(203)),
                 completion_global_symbol: Style::new().fg(Color::Fixed(209)),
@@ -96,6 +99,9 @@ impl BuiltinTheme {
                 number: Style::new().fg(Color::Fixed(166)),
                 builtin_symbol: Style::new().fg(Color::Fixed(124)).bold(),
                 user_symbol: Style::new().fg(Color::Fixed(136)),
+                undefined_symbol: Style::new().fg(Color::Fixed(244)),
+                semantic_local_variable: Style::new().fg(Color::Fixed(25)).underline(),
+                semantic_pattern_variable: Style::new().fg(Color::Fixed(90)).italic(),
                 completion_command: Style::new().fg(Color::Fixed(160)).bold(),
                 completion_symbol: Style::new().fg(Color::Fixed(124)),
                 completion_global_symbol: Style::new().fg(Color::Fixed(160)),
@@ -128,6 +134,9 @@ impl BuiltinTheme {
                 number: Style::new().fg(Color::Fixed(136)),
                 builtin_symbol: Style::new().fg(Color::Fixed(33)).bold(),
                 user_symbol: Style::new().fg(Color::Fixed(37)),
+                undefined_symbol: Style::new().fg(Color::Fixed(244)),
+                semantic_local_variable: Style::new().fg(Color::Fixed(136)).underline(),
+                semantic_pattern_variable: Style::new().fg(Color::Fixed(125)).italic(),
                 completion_command: Style::new().fg(Color::Fixed(33)),
                 completion_symbol: Style::new().fg(Color::Fixed(33)),
                 completion_global_symbol: Style::new().fg(Color::Fixed(38)),
@@ -163,6 +172,9 @@ impl BuiltinTheme {
                 number: Style::new().fg(Color::Fixed(208)),
                 builtin_symbol: Style::new().fg(Color::Fixed(109)).bold(),
                 user_symbol: Style::new().fg(Color::Fixed(175)),
+                undefined_symbol: Style::new().fg(Color::Fixed(245)),
+                semantic_local_variable: Style::new().fg(Color::Fixed(108)).underline(),
+                semantic_pattern_variable: Style::new().fg(Color::Fixed(214)).italic(),
                 completion_command: Style::new().fg(Color::Fixed(109)),
                 completion_symbol: Style::new().fg(Color::Fixed(109)),
                 completion_global_symbol: Style::new().fg(Color::Fixed(208)),
@@ -198,6 +210,9 @@ impl BuiltinTheme {
                 number: Style::new().fg(Color::Fixed(141)),
                 builtin_symbol: Style::new().fg(Color::Fixed(81)).bold(),
                 user_symbol: Style::new().fg(Color::Fixed(197)),
+                undefined_symbol: Style::new().fg(Color::Fixed(244)),
+                semantic_local_variable: Style::new().fg(Color::Fixed(148)).underline(),
+                semantic_pattern_variable: Style::new().fg(Color::Fixed(141)).italic(),
                 completion_command: Style::new().fg(Color::Fixed(81)),
                 completion_symbol: Style::new().fg(Color::Fixed(81)),
                 completion_global_symbol: Style::new().fg(Color::Fixed(204)),
@@ -233,6 +248,9 @@ impl BuiltinTheme {
                 number: Style::new(),
                 builtin_symbol: Style::new(),
                 user_symbol: Style::new(),
+                undefined_symbol: Style::new(),
+                semantic_local_variable: Style::new().underline(),
+                semantic_pattern_variable: Style::new().italic(),
                 completion_command: Style::new(),
                 completion_symbol: Style::new(),
                 completion_global_symbol: Style::new(),
@@ -481,6 +499,12 @@ pub(crate) struct CommandConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) no_completion_menu: Option<bool>,
+    #[serde(
+        rename = "no-tree-sitter-highlighting",
+        alias = "no_tree_sitter_highlighting",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) no_tree_sitter_highlighting: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) linkconnect: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -504,6 +528,7 @@ impl CommandConfig {
             && self.completion_ghost_text.is_none()
             && self.no_completion_ghost_text.is_none()
             && self.no_completion_menu.is_none()
+            && self.no_tree_sitter_highlighting.is_none()
             && self.linkconnect.is_none()
             && self.linkname.is_none()
             && self.linkprotocol.is_none()
@@ -630,6 +655,9 @@ pub(crate) struct ThemeStyles {
     pub(crate) number: Style,
     pub(crate) builtin_symbol: Style,
     pub(crate) user_symbol: Style,
+    pub(crate) undefined_symbol: Style,
+    pub(crate) semantic_local_variable: Style,
+    pub(crate) semantic_pattern_variable: Style,
     pub(crate) completion_command: Style,
     pub(crate) completion_symbol: Style,
     pub(crate) completion_global_symbol: Style,
@@ -669,6 +697,9 @@ struct JsonThemeStyles {
     number: Option<JsonStyle>,
     builtin_symbol: Option<JsonStyle>,
     user_symbol: Option<JsonStyle>,
+    undefined_symbol: Option<JsonStyle>,
+    semantic_local_variable: Option<JsonStyle>,
+    semantic_pattern_variable: Option<JsonStyle>,
     completion_command: Option<JsonStyle>,
     completion_symbol: Option<JsonStyle>,
     completion_global_symbol: Option<JsonStyle>,
@@ -797,6 +828,21 @@ impl JsonThemeStyles {
             "builtin_symbol",
         )?;
         apply_style(&mut styles.user_symbol, self.user_symbol, "user_symbol")?;
+        apply_style(
+            &mut styles.undefined_symbol,
+            self.undefined_symbol,
+            "undefined_symbol",
+        )?;
+        apply_style(
+            &mut styles.semantic_local_variable,
+            self.semantic_local_variable,
+            "semantic_local_variable",
+        )?;
+        apply_style(
+            &mut styles.semantic_pattern_variable,
+            self.semantic_pattern_variable,
+            "semantic_pattern_variable",
+        )?;
         apply_style(
             &mut styles.completion_command,
             self.completion_command,

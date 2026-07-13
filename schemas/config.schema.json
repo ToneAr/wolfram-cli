@@ -73,6 +73,14 @@
           "description": "Alias for no-completion-menu.",
           "type": "boolean"
         },
+        "no-tree-sitter-highlighting": {
+          "description": "Disable tree-sitter semantic highlighting overlays and skip tree-sitter parsing during highlighting.",
+          "type": "boolean"
+        },
+        "no_tree_sitter_highlighting": {
+          "description": "Alias for no-tree-sitter-highlighting.",
+          "type": "boolean"
+        },
         "linkconnect": {
           "description": "Connect to an existing WSTP link instead of launching a new kernel.",
           "type": "boolean"
@@ -135,6 +143,7 @@
         "no-prompt": false,
         "completion-ghost-text": false,
         "no-completion-menu": false,
+        "no-tree-sitter-highlighting": false,
         "linkconnect": false,
         "linkname": "my-link",
         "linkprotocol": "SharedMemory",
