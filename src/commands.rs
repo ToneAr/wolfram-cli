@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::{self, Write},
     path::Path,
     process::{Command, ExitStatus, Stdio},
@@ -617,12 +619,25 @@ fn parse_wolfram_string_literal(input: &str) -> Option<(String, &str)> {
     None
 }
 
+pub(crate) fn shell_escape_name() -> String {
+    let shell = shell_escape_program();
+    Path::new(&shell)
+        .file_name()
+        .unwrap_or(shell.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(unix)]
+fn shell_escape_program() -> OsString {
+    env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "sh".into())
+}
+
 #[cfg(unix)]
 fn shell_escape_command(command: &str) -> Command {
-    let shell = env::var_os("SHELL")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "sh".into());
-    let mut child = Command::new(shell);
+    let mut child = Command::new(shell_escape_program());
     if command.trim().is_empty() {
         child.arg("-i");
     } else {
@@ -632,11 +647,15 @@ fn shell_escape_command(command: &str) -> Command {
 }
 
 #[cfg(windows)]
-fn shell_escape_command(command: &str) -> Command {
-    let shell = env::var_os("COMSPEC")
+fn shell_escape_program() -> OsString {
+    env::var_os("COMSPEC")
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "cmd.exe".into());
-    let mut child = Command::new(shell);
+        .unwrap_or_else(|| "cmd.exe".into())
+}
+
+#[cfg(windows)]
+fn shell_escape_command(command: &str) -> Command {
+    let mut child = Command::new(shell_escape_program());
     if !command.trim().is_empty() {
         child.arg("/C").arg(command);
     }

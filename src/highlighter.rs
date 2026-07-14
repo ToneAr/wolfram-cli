@@ -323,7 +323,7 @@ pub(crate) fn highlight_shell_escape_with_command_lookup(
     if shell_escape_start > 0 {
         out.push((Style::new(), line[..shell_escape_start].to_string()));
     }
-    out.push((Style::new().fg(Color::Red).bold(), "! ".to_string()));
+    out.push((styles.prompt_left, "! ".to_string()));
 
     let command_start = shell_escape_start + 2;
     let command = &line[command_start..];

@@ -1710,7 +1710,11 @@ fn wolfram_prompt_is_hidden_while_shell_escape_is_active() {
     assert!(prompt.render_prompt_left().contains("In[7]:="));
 
     shell_prompt_hidden.store(true, Ordering::Relaxed);
-    assert_eq!(prompt.render_prompt_left(), "");
+    assert!(
+        prompt
+            .render_prompt_left()
+            .contains(&format!("{} ", shell_escape_name()))
+    );
     assert_eq!(prompt.render_prompt_right(), "");
     assert_eq!(prompt.render_prompt_multiline_indicator(), "");
 }
@@ -1765,14 +1769,7 @@ fn highlighter_uses_shell_styles_only_for_shell_escape() {
     )
     .buffer;
 
-    assert!(
-        fragments.contains(&(
-            nu_ansi_term::Style::new()
-                .fg(nu_ansi_term::Color::Red)
-                .bold(),
-            "! ".to_string()
-        ))
-    );
+    assert!(fragments.contains(&(test_styles().prompt_left, "! ".to_string())));
     assert!(!fragments.iter().any(|(_, fragment)| fragment == ":!"));
     assert!(!fragments.iter().any(|(_, fragment)| fragment == ":"));
     assert!(fragments.contains(&(test_styles().completion_command, "echo".to_string())));
@@ -1832,12 +1829,7 @@ fn highlighter_reveals_shell_escape_marker_only_when_cursor_is_left_or_inside_it
     for cursor in [2, 3] {
         assert_eq!(
             highlighted_fragments_at_cursor(":!echo", cursor)[0],
-            (
-                nu_ansi_term::Style::new()
-                    .fg(nu_ansi_term::Color::Red)
-                    .bold(),
-                "! ".to_string()
-            )
+            (test_styles().prompt_left, "! ".to_string())
         );
     }
 }

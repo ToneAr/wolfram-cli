@@ -13,6 +13,7 @@ use crossterm::{
     event::{Event, KeyEvent},
     style::Color as CrosstermColor,
 };
+
 use reedline::{
     Completer, EditCommand, EditMode, Editor, Emacs, IdeMenu, KeyCode, KeyModifiers, ListMenu,
     Menu, MenuBuilder, MenuEvent, Painter, Prompt, PromptEditMode, PromptHistorySearch,
@@ -21,6 +22,7 @@ use reedline::{
 };
 
 use crate::{
+    commands::shell_escape_name,
     completion::GhostCompletionSelection,
     kernel::KernelStatus,
     theme::{ThemeHandle, ThemeStyles},
@@ -39,18 +41,29 @@ pub(crate) struct WolframPrompt {
 }
 
 impl WolframPrompt {
+    fn shell_prompt_is_active(&self) -> bool {
+        self.shell_prompt_hidden.load(Ordering::Relaxed)
+    }
+
     fn should_render_prompt(&self) -> bool {
-        self.show_prompt && !self.shell_prompt_hidden.load(Ordering::Relaxed)
+        self.show_prompt && !self.shell_prompt_is_active()
     }
 }
 
 impl Prompt for WolframPrompt {
     fn render_prompt_left(&self) -> std::borrow::Cow<'_, str> {
-        if !self.should_render_prompt() {
+        if !self.show_prompt {
             return "".into();
         }
 
         let styles = self.theme.current().styles();
+        if self.shell_prompt_is_active() {
+            return styles
+                .prompt_left
+                .paint(format!("{} ", shell_escape_name()))
+                .to_string()
+                .into();
+        }
         styles
             .prompt_left
             .paint(&self.input_prompt)
