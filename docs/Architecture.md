@@ -260,7 +260,7 @@ sequenceDiagram
 | `InputNamePacket`                         | `KernelPacket::InputName`                   | Stores or updates the displayed `In[n]:=` prompt.                                              |
 | `OutputNamePacket`                        | `KernelPacket::OutputName`                  | Saved and printed before the following return value.                                           |
 | `TextPacket`                              | `KernelPacket::Text`                        | Printed directly unless it is the prompt text immediately before an input request.             |
-| `MessagePacket`                           | `KernelPacket::Message`                     | Currently decoded but not printed directly; message text usually arrives through `TextPacket`. |
+| `MessagePacket`                           | `KernelPacket::Message`                     | Identifies the following message `TextPacket`; that text is printed immediately, including while the initial prompt is being read. |
 | `ReturnPacket` / `ReturnExpressionPacket` | `KernelPacket::Return` / `ReturnExpression` | Rendered as expression text, or as the raw string if the expression is a string.               |
 | `ReturnTextPacket`                        | `KernelPacket::ReturnText`                  | Rendered as text.                                                                              |
 | `SyntaxPacket`                            | `KernelPacket::Syntax`                      | Printed as `Syntax error at position n`.                                                       |

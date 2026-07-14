@@ -1,0 +1,1 @@
+Function[{name}, If[Names[name] === {}, "false", "true"]]

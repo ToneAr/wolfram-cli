@@ -97,6 +97,9 @@ pub(crate) fn run_repl(
     let ghost_completion_selection = (completion_ghost_text_enabled && !completion_menu_enabled)
         .then(GhostCompletionSelection::new);
     let mut line_editor = Reedline::create()
+        // Deliver terminal pastes as one `Event::Paste`, so the edit mode can
+        // insert the complete payload rather than processing its characters.
+        .use_bracketed_paste(true)
         .use_kitty_keyboard_enhancement(true)
         .with_ansi_colors(use_color)
         .with_visual_selection_style(theme.current().styles().visual_selection)

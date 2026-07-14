@@ -25,16 +25,13 @@ pub(crate) struct WolframHighlighter {
     snapshot: Mutex<SymbolSnapshot>,
 }
 
-/// Highlighting runs on every repaint, so it must not clone the shared
-/// symbol sets per keystroke. Both sets are insert-only, which makes their
-/// length a complete change detector: the snapshot is rebuilt only when a
-/// set has grown, and `known_symbols` additionally carries the short name of
-/// every qualified symbol so per-word checks are hash lookups instead of
-/// whole-set scans.
+/// Highlighting runs on every repaint. Locally remembered user symbols are
+/// insert-only and can use their length as a change detector. Exact kernel
+/// definition results may be removed after the completion epoch changes, so
+/// that set is refreshed directly to avoid retaining stale highlighting.
 #[derive(Default)]
 struct SymbolSnapshot {
     user_len: usize,
-    known_len: usize,
     user_symbols: HashSet<String>,
     known_symbols: HashSet<String>,
 }
@@ -78,10 +75,7 @@ impl WolframHighlighter {
             let known_qualified_symbols = known_qualified_symbols
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if known_qualified_symbols.len() != snapshot.known_len {
-                snapshot.known_symbols = expand_known_symbols(&known_qualified_symbols);
-                snapshot.known_len = known_qualified_symbols.len();
-            }
+            snapshot.known_symbols = known_qualified_symbols.clone();
         }
         snapshot
     }
@@ -107,21 +101,6 @@ impl Highlighter for WolframHighlighter {
             self.symbol_lookup.as_ref(),
         )
     }
-}
-
-/// Builds the lookup set `highlight_with_symbol_snapshot` expects: every
-/// qualified symbol plus its short name, so both `Context`Name` and `Name`
-/// spellings resolve with a single `contains` call.
-fn expand_known_symbols(qualified_symbols: &HashSet<String>) -> HashSet<String> {
-    let mut expanded = HashSet::with_capacity(qualified_symbols.len() * 2);
-    for symbol in qualified_symbols {
-        let short = short_symbol_name(symbol);
-        if !short.is_empty() && short != symbol {
-            expanded.insert(short.to_string());
-        }
-        expanded.insert(symbol.clone());
-    }
-    expanded
 }
 
 pub(crate) fn highlight_wolfram_text(
@@ -152,22 +131,20 @@ pub(crate) fn highlight_wolfram_text_at_cursor(
     known_qualified_symbols: Option<&HashSet<String>>,
     symbol_lookup: Option<&SymbolHighlighterLookup>,
 ) -> StyledText {
-    let expanded_known_symbols = known_qualified_symbols.map(expand_known_symbols);
     highlight_with_symbol_snapshot(
         line,
         cursor,
         styles,
         builtin_symbols,
         user_symbols,
-        expanded_known_symbols.as_ref(),
+        known_qualified_symbols,
         symbol_lookup,
     )
 }
 
-/// Core highlighting pass. `known_symbols` must already contain short names
-/// alongside qualified ones (see `expand_known_symbols`); the reedline
-/// highlighter passes its cached snapshot here directly so no per-keystroke
-/// set copies or scans happen.
+/// Core highlighting pass. `known_symbols` contains exact spellings confirmed
+/// by the kernel; qualified names do not implicitly make their short names
+/// visible.
 fn highlight_with_symbol_snapshot(
     line: &str,
     cursor: usize,
@@ -245,31 +222,32 @@ fn highlight_with_symbol_snapshot(
             }
             let word = &line[start..end];
             let short = short_symbol_name(word);
-            let is_builtin = word.starts_with("System`")
-                || builtin_symbols.is_none_or(|symbols| symbols.contains(short));
-            if !is_builtin && (is_non_global_or_internal_symbol(word) || !word.contains('`')) {
-                symbol_lookup.inspect(|lookup| lookup.request(word));
-            }
-            let is_user_defined = user_symbols.is_some_and(|symbols| {
-                if word.contains('`') {
-                    is_non_global_or_internal_symbol(word) && symbols.contains(word)
-                } else {
-                    symbols.contains(short)
-                }
-            });
-            let is_known_custom_symbol = known_symbols.is_some_and(|symbols| {
-                if word.contains('`') {
-                    is_non_global_or_internal_symbol(word) && symbols.contains(word)
+            let is_builtin = builtin_symbols.is_none_or(|symbols| {
+                if let Some((context, name)) = word.rsplit_once('`') {
+                    context == "System" && symbols.contains(name)
                 } else {
                     symbols.contains(word)
                 }
             });
+            if !is_builtin {
+                symbol_lookup.inspect(|lookup| lookup.request(word));
+            }
+            let is_user_defined = symbol_lookup.is_none()
+                && user_symbols.is_some_and(|symbols| {
+                    if word.contains('`') {
+                        symbols.contains(word)
+                    } else {
+                        symbols.contains(short)
+                    }
+                });
+            let is_known_custom_symbol =
+                known_symbols.is_some_and(|symbols| symbols.contains(word));
             let style = if is_builtin {
                 styles.builtin_symbol
             } else if is_user_defined || is_known_custom_symbol {
                 styles.user_symbol
             } else {
-                Style::new()
+                styles.undefined_symbol
             };
             flush_plain(&mut out, &mut plain);
             out.push((style, word.to_string()));
@@ -404,12 +382,6 @@ pub(crate) fn highlight_shell_escape_with_command_lookup(
     }
 
     out
-}
-
-fn is_non_global_or_internal_symbol(symbol: &str) -> bool {
-    symbol.rsplit_once('`').is_some_and(|(context, name)| {
-        !name.is_empty() && !matches!(context, "Global" | "Internal")
-    })
 }
 
 pub(crate) fn print_highlighted(text: &str, theme: &Theme) {

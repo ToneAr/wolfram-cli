@@ -704,18 +704,33 @@ fn put_enter_text_packet(link: &mut Link, input: &str) -> Result<()> {
 }
 
 fn read_initial_input_name_packet(link: &mut Link, process: &mut KernelProcess) -> Result<String> {
+    let mut pending_message_identifier: Option<(String, String)> = None;
+
     loop {
         let packet_id = next_packet_id(link, process, "initial prompt")?;
         let packet = read_packet_payload(link, packet_id)?;
-        if let KernelPacket::InputName(prompt) = packet {
-            finish_packet(link, "initial InputNamePacket")?;
-            return Ok(prompt);
-        }
-        if matches!(packet, KernelPacket::Input | KernelPacket::InputString) {
-            bail!(
-                "kernel sent {} before the initial InputNamePacket",
-                packet_name(packet_id)
-            );
+        match &packet {
+            KernelPacket::InputName(prompt) => {
+                finish_packet(link, "initial InputNamePacket")?;
+                return Ok(prompt.clone());
+            }
+            // A MessagePacket identifies the TextPacket that follows it. Startup
+            // messages must not be swallowed while waiting for the first prompt.
+            KernelPacket::Message { symbol, tag } => {
+                pending_message_identifier = Some((symbol.clone(), tag.clone()));
+            }
+            KernelPacket::Text(text) => {
+                if let Some((symbol, tag)) = pending_message_identifier.take() {
+                    print_kernel_message_text(text, &symbol, &tag, None)?;
+                }
+            }
+            KernelPacket::Input | KernelPacket::InputString => {
+                bail!(
+                    "kernel sent {} before the initial InputNamePacket",
+                    packet_name(packet_id)
+                );
+            }
+            _ => {}
         }
         finish_packet(link, "initial packet")?;
     }

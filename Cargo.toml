@@ -22,7 +22,8 @@ wstp = '0.6.0-alpha.5'
 build = 'build_tools/build.rs'
 edition = '2024'
 name = 'wolfie'
-version = '0.8.7'
+version = '0.9.0'
+
 
 [profile.release]
 lto = 'thin'

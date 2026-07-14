@@ -304,17 +304,14 @@ fn symbol_completion_reuses_broader_query_prefixes() {
 }
 
 #[test]
-fn symbol_highlighter_uses_precise_qualified_prefixes() {
-    assert_eq!(symbol_query_prefix("MyContext`foo"), "MyContext`");
-    assert_eq!(
-        symbol_highlighter_query_prefix("MyContext`foo"),
-        "MyContext`foo"
-    );
-    assert_eq!(
-        symbol_highlighter_query_prefix("DatabaseLink`$SQLTimeout"),
-        "DatabaseLink`$SQLTimeout"
-    );
-    assert_eq!(symbol_highlighter_query_prefix("SQLSelect"), "SQ");
+fn symbol_highlighter_uses_exact_names_lookup() {
+    let query = symbol_definition_query("xy");
+    let compact_query = query.split_whitespace().collect::<String>();
+
+    assert!(compact_query.starts_with("(Function[{name},"));
+    assert!(compact_query.contains("Names[name]==={}"));
+    assert!(compact_query.ends_with(")[\"xy\"]"));
+    assert!(!query.contains('*'));
 }
 
 #[test]
@@ -504,6 +501,40 @@ fn paste_inserts_text_in_one_edit_without_opening_completion() {
             )]),
         ])
     );
+}
+
+#[test]
+fn oversized_paste_is_inserted_once_and_editor_paths_accept_it() {
+    let input = "x".repeat(usize::from(u16::MAX) + 1);
+    let mut edit_mode =
+        history_primed_edit_mode(completion_edit_mode(true), HistoryTrigger::new(), None);
+
+    assert_eq!(
+        edit_mode.parse_event(raw_paste(&input)),
+        ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Esc,
+            ReedlineEvent::Edit(vec![EditCommand::InsertString(input.clone())]),
+        ])
+    );
+
+    let highlighter = WolframHighlighter::new(
+        builtin_symbol_set(),
+        test_user_symbols(),
+        None,
+        None,
+        ThemeHandle::builtin(Theme::dark()),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let highlighted = highlighter.highlight(&input, input.len());
+    assert_eq!(highlighted.buffer.len(), 1);
+
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
+    assert!(completer.complete(&input, input.len()).is_empty());
 }
 
 fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> ReedlineRawEvent {
@@ -1812,11 +1843,11 @@ fn highlighter_reveals_shell_escape_marker_only_when_cursor_is_left_or_inside_it
 }
 
 #[test]
-fn highlighter_colors_explicit_system_context_as_builtin_even_if_unknown() {
+fn highlighter_does_not_assume_system_context_symbols_are_defined() {
     let builtin: HashSet<String> = HashSet::new();
     let user: HashSet<String> = HashSet::new();
     let style = style_of("System`Foo[x]", &builtin, &user, "System`Foo");
-    assert_eq!(style, test_styles().builtin_symbol);
+    assert_eq!(style, test_styles().undefined_symbol);
 }
 
 #[test]
@@ -1829,6 +1860,32 @@ fn highlighter_colors_defined_user_symbols_differently_from_builtins() {
 }
 
 #[test]
+fn dynamic_highlighter_does_not_trust_stale_local_assignments() {
+    let user_symbols = Arc::new(Mutex::new(HashSet::from(["zz".to_string()])));
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        user_symbols.clone(),
+    );
+    let highlighter = WolframHighlighter::new(
+        builtin_symbol_set(),
+        user_symbols,
+        Some(source.known_qualified_symbols.clone()),
+        Some(source.highlighter_lookup()),
+        ThemeHandle::builtin(Theme::dark()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let style = highlighter
+        .highlight("zz", 2)
+        .buffer
+        .into_iter()
+        .find_map(|(style, fragment)| (fragment == "zz").then_some(style))
+        .expect("zz should be present in highlighted output");
+    assert_eq!(style, test_styles().undefined_symbol);
+}
+
+#[test]
 fn highlighter_colors_symbols_outside_global_and_internal_contexts() {
     let builtin: HashSet<String> = ["Plot".to_string()].into_iter().collect();
     let user: HashSet<String> = ["OtherContext`x".to_string()].into_iter().collect();
@@ -1836,11 +1893,11 @@ fn highlighter_colors_symbols_outside_global_and_internal_contexts() {
 
     assert_eq!(
         style_of(text, &builtin, &user, "Global`x"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
     assert_eq!(
         style_of(text, &builtin, &user, "Internal`x"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
     assert_eq!(
         style_of(text, &builtin, &user, "OtherContext`x"),
@@ -1848,7 +1905,7 @@ fn highlighter_colors_symbols_outside_global_and_internal_contexts() {
     );
     assert_eq!(
         style_of(text, &builtin, &user, "OtherContext`unknown"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
 }
 
@@ -1876,6 +1933,7 @@ fn highlighter_colors_exact_custom_context_symbols_from_completion() {
     let lookup = source.highlighter_lookup();
     lookup.request("OtherContext`known");
     wait_until(|| {
+        lookup.request("OtherContext`known");
         source
             .known_qualified_symbols
             .lock()
@@ -1896,7 +1954,11 @@ fn highlighter_colors_exact_custom_context_symbols_from_completion() {
     );
     assert_eq!(
         style_of_with_known(text, &builtin, &user, Some(&known), "OtherContext`unknown"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
+    );
+    assert_eq!(
+        style_of_with_known("known", &builtin, &user, Some(&known), "known"),
+        test_styles().undefined_symbol
     );
 }
 
@@ -1904,7 +1966,7 @@ fn highlighter_colors_exact_custom_context_symbols_from_completion() {
 fn highlighter_colors_unqualified_package_symbols_from_completion() {
     let backend = FakeBackend {
         symbols: HashMap::from([(
-            "SQ".to_string(),
+            "SQLSelect".to_string(),
             vec![CompletionItem {
                 value: "SQLSelect".to_string(),
                 kind: CompletionKind::Symbol,
@@ -1924,11 +1986,12 @@ fn highlighter_colors_unqualified_package_symbols_from_completion() {
     let lookup = source.highlighter_lookup();
     lookup.request("SQLSelect");
     wait_until(|| {
+        lookup.request("SQLSelect");
         source
             .known_qualified_symbols
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains("DatabaseLink`SQLSelect")
+            .contains("SQLSelect")
     });
 
     let builtin = HashSet::new();
@@ -1941,6 +2004,92 @@ fn highlighter_colors_unqualified_package_symbols_from_completion() {
         style_of_with_known("SQLSelect", &builtin, &user, Some(&known), "SQLSelect"),
         test_styles().user_symbol
     );
+}
+
+#[test]
+fn highlighter_colors_only_exact_one_and_two_letter_names() {
+    let symbol = |value: &str| CompletionItem {
+        value: value.to_string(),
+        kind: CompletionKind::Symbol,
+        frequency: None,
+        context: Some("Package`".to_string()),
+    };
+    let backend = FakeBackend {
+        symbols: HashMap::from([
+            ("x".to_string(), vec![symbol("xDefined")]),
+            ("y".to_string(), vec![symbol("y")]),
+            ("xx".to_string(), vec![symbol("xxDefined")]),
+            ("yy".to_string(), vec![symbol("yy")]),
+        ]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let lookup = source.highlighter_lookup();
+    for name in ["x", "y", "xx", "yy"] {
+        lookup.prefetch(name, Duration::from_secs(1));
+    }
+
+    let builtin = HashSet::new();
+    let user = HashSet::new();
+    let known = source
+        .known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!known.contains("x"));
+    assert!(!known.contains("xx"));
+    assert!(known.contains("y"));
+    assert!(known.contains("yy"));
+    for name in ["x", "xx"] {
+        assert_eq!(
+            style_of_with_known(name, &builtin, &user, Some(&known), name),
+            test_styles().undefined_symbol
+        );
+    }
+    for name in ["y", "yy"] {
+        assert_eq!(
+            style_of_with_known(name, &builtin, &user, Some(&known), name),
+            test_styles().user_symbol
+        );
+    }
+}
+
+#[test]
+fn highlighter_checks_each_symbol_independently() {
+    let backend = FakeBackend {
+        symbols: HashMap::from([(
+            "abKnown".to_string(),
+            vec![CompletionItem {
+                value: "abKnown".to_string(),
+                kind: CompletionKind::Symbol,
+                frequency: None,
+                context: Some("Package`".to_string()),
+            }],
+        )]),
+        details: HashMap::new(),
+        delay: Duration::ZERO,
+        details_delay: Duration::ZERO,
+    };
+    let source = CompletionSource::with_backend(
+        Arc::new(backend),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let lookup = source.highlighter_lookup();
+    lookup.prefetch("abUnknown", Duration::from_secs(1));
+    lookup.prefetch("abKnown", Duration::from_secs(1));
+
+    let known = source
+        .known_qualified_symbols
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!known.contains("abUnknown"));
+    assert!(known.contains("abKnown"));
 }
 
 #[test]
@@ -1967,6 +2116,7 @@ fn highlighter_colors_precise_package_variable_from_completion() {
     let lookup = source.highlighter_lookup();
     lookup.request("DatabaseLink`$SQLTimeout");
     wait_until(|| {
+        lookup.request("DatabaseLink`$SQLTimeout");
         source
             .known_qualified_symbols
             .lock()
@@ -1993,7 +2143,7 @@ fn highlighter_colors_precise_package_variable_from_completion() {
     );
     assert_eq!(
         style_of_with_known(text, &builtin, &user, Some(&known), "DatabaseLink`$Other"),
-        nu_ansi_term::Style::new()
+        test_styles().undefined_symbol
     );
 }
 

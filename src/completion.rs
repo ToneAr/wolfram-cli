@@ -21,8 +21,8 @@ use crate::{
     profiler::{profile_duration, profile_duration_with},
     theme::{BuiltinTheme, Theme, ThemeHandle, ThemeRegistry, ThemeStyles},
     wl::{
-        OPTIONS_QUERY_WL, SYMBOL_COMPLETION_QUERY_WL, SYMBOL_DETAILS_BATCH_QUERY_WL,
-        wolfram_function_call, wolfram_string_literal,
+        OPTIONS_QUERY_WL, SYMBOL_COMPLETION_QUERY_WL, SYMBOL_DEFINITION_QUERY_WL,
+        SYMBOL_DETAILS_BATCH_QUERY_WL, wolfram_function_call, wolfram_string_literal,
     },
     wolfram_syntax::{
         cursor_is_in_wolfram_string, is_qualified_symbol_name, option_context, short_symbol_name,
@@ -141,6 +141,23 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> AsyncCache<K, V> {
 /// from `Completer::complete` on reedline's input thread.
 pub(crate) trait KernelBackend: Send + Sync {
     fn load_symbols_for_prefix(&self, prefix: &str) -> Result<Vec<CompletionItem>>;
+    fn symbol_is_defined(&self, symbol: &str) -> Result<bool> {
+        Ok(self
+            .load_symbols_for_prefix(symbol)?
+            .iter()
+            .filter(|item| item.kind == CompletionKind::Symbol)
+            .any(|item| {
+                if symbol.contains('`') {
+                    item.value == symbol
+                        || item
+                            .context
+                            .as_ref()
+                            .is_some_and(|context| format!("{context}{}", item.value) == symbol)
+                } else {
+                    item.value == symbol
+                }
+            }))
+    }
     fn load_symbol_details(
         &self,
         symbols: &[String],
@@ -167,6 +184,14 @@ impl KernelBackend for KernelBackendImpl {
         Ok(parse_completion_items(lines))
     }
 
+    fn symbol_is_defined(&self, symbol: &str) -> Result<bool> {
+        let code = symbol_definition_query(symbol);
+        let lines = self
+            .query_lines(&code)
+            .with_context(|| format!("failed to check whether symbol {symbol:?} is defined"))?;
+        Ok(lines.iter().any(|line| line == "true"))
+    }
+
     fn load_symbol_details(
         &self,
         symbols: &[String],
@@ -190,6 +215,10 @@ enum CompletionJob {
     Options { head: String, epoch: u64 },
 }
 
+enum SymbolDefinitionJob {
+    Check { symbol: String, epoch: u64 },
+}
+
 enum CompletionDetailJob {
     Details { symbols: Vec<String>, epoch: u64 },
 }
@@ -198,7 +227,6 @@ fn spawn_completion_worker(
     backend: Arc<dyn KernelBackend>,
     symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
     options_cache: AsyncCache<String, Vec<String>>,
-    known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
     generation: Arc<AtomicU64>,
 ) -> mpsc::Sender<CompletionJob> {
     let (sender, receiver) = mpsc::channel::<CompletionJob>();
@@ -207,15 +235,28 @@ fn spawn_completion_worker(
             for job in
                 coalesced_completion_jobs(first_job, &receiver, &symbols_cache, &options_cache)
             {
-                process_completion_job(
-                    &backend,
-                    &symbols_cache,
-                    &options_cache,
-                    &known_qualified_symbols,
-                    job,
-                );
+                process_completion_job(&backend, &symbols_cache, &options_cache, job);
                 generation.fetch_add(1, Ordering::Relaxed);
             }
+        }
+    });
+    sender
+}
+
+fn spawn_symbol_definition_worker(
+    backend: Arc<dyn KernelBackend>,
+    definitions_cache: AsyncCache<String, bool>,
+    generation: Arc<AtomicU64>,
+) -> mpsc::Sender<SymbolDefinitionJob> {
+    let (sender, receiver) = mpsc::channel::<SymbolDefinitionJob>();
+    thread::spawn(move || {
+        while let Ok(SymbolDefinitionJob::Check { symbol, epoch }) = receiver.recv() {
+            let is_defined = backend.symbol_is_defined(&symbol).unwrap_or_else(|err| {
+                eprintln!("warning: symbol definition lookup disabled for {symbol:?}: {err:#}");
+                false
+            });
+            definitions_cache.insert(symbol, epoch, is_defined);
+            generation.fetch_add(1, Ordering::Relaxed);
         }
     });
     sender
@@ -269,7 +310,6 @@ fn process_completion_job(
     backend: &Arc<dyn KernelBackend>,
     symbols_cache: &AsyncCache<String, Vec<CompletionItem>>,
     options_cache: &AsyncCache<String, Vec<String>>,
-    known_qualified_symbols: &Arc<Mutex<HashSet<String>>>,
     job: CompletionJob,
 ) {
     match job {
@@ -286,7 +326,6 @@ fn process_completion_job(
                 start.elapsed(),
                 format!("prefix={prefix:?} count={}", items.len()),
             );
-            remember_known_qualified_symbols(known_qualified_symbols, &items);
             symbols_cache.insert(prefix, epoch, items);
         }
         CompletionJob::Options { head, epoch } => {
@@ -408,8 +447,10 @@ pub(crate) struct CompletionSource {
     pub(crate) user_symbols: Arc<Mutex<HashSet<String>>>,
     pub(crate) known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
     job_sender: mpsc::Sender<CompletionJob>,
+    definition_job_sender: mpsc::Sender<SymbolDefinitionJob>,
     detail_job_sender: mpsc::Sender<CompletionDetailJob>,
     pub(crate) symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
+    pub(crate) definitions_cache: AsyncCache<String, bool>,
     pub(crate) details_cache: AsyncCache<String, CompletionItemDetails>,
     pub(crate) options_cache: AsyncCache<String, Vec<String>>,
     /// Bumped by the background workers after every cache fill, so cheap
@@ -435,14 +476,11 @@ struct CompleteMemo {
 #[derive(Clone)]
 pub(crate) struct SymbolHighlighterLookup {
     epoch: Arc<AtomicU64>,
-    job_sender: mpsc::Sender<CompletionJob>,
-    symbols_cache: AsyncCache<String, Vec<CompletionItem>>,
+    definition_job_sender: mpsc::Sender<SymbolDefinitionJob>,
+    definitions_cache: AsyncCache<String, bool>,
     known_qualified_symbols: Arc<Mutex<HashSet<String>>>,
-    /// Prefixes whose ready results were already folded into
-    /// `known_qualified_symbols` for a given epoch. The highlighter calls
-    /// `request` for every non-builtin word on every repaint; without this
-    /// marker each of those calls would re-insert up to a full result batch
-    /// of freshly formatted symbol names per keystroke.
+    /// Requested spellings whose exact `Names` results were already folded
+    /// into `known_qualified_symbols` for a given epoch.
     remembered: Arc<Mutex<HashMap<String, u64>>>,
 }
 
@@ -461,6 +499,7 @@ impl CompletionSource {
         user_symbols: Arc<Mutex<HashSet<String>>>,
     ) -> Self {
         let symbols_cache = AsyncCache::new();
+        let definitions_cache = AsyncCache::new();
         let details_cache = AsyncCache::new();
         let options_cache = AsyncCache::new();
         let known_qualified_symbols = Arc::new(Mutex::new(HashSet::new()));
@@ -469,7 +508,11 @@ impl CompletionSource {
             backend.clone(),
             symbols_cache.clone(),
             options_cache.clone(),
-            known_qualified_symbols.clone(),
+            generation.clone(),
+        );
+        let definition_job_sender = spawn_symbol_definition_worker(
+            backend.clone(),
+            definitions_cache.clone(),
             generation.clone(),
         );
         let detail_job_sender = spawn_completion_detail_worker(
@@ -482,8 +525,10 @@ impl CompletionSource {
             user_symbols,
             known_qualified_symbols,
             job_sender,
+            definition_job_sender,
             detail_job_sender,
             symbols_cache,
+            definitions_cache,
             details_cache,
             options_cache,
             generation,
@@ -546,8 +591,8 @@ impl CompletionSource {
     pub(crate) fn highlighter_lookup(&self) -> SymbolHighlighterLookup {
         SymbolHighlighterLookup {
             epoch: self.epoch.clone(),
-            job_sender: self.job_sender.clone(),
-            symbols_cache: self.symbols_cache.clone(),
+            definition_job_sender: self.definition_job_sender.clone(),
+            definitions_cache: self.definitions_cache.clone(),
             known_qualified_symbols: self.known_qualified_symbols.clone(),
             remembered: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -607,16 +652,10 @@ impl CompletionSource {
                 format!("prefix={prefix:?} count={}", items.len())
             });
         }
-        self.remember_known_qualified_symbols(&items);
-
         profile_duration_with("source.symbols", start.elapsed(), || {
             format!("prefix={prefix:?} count={}", items.len())
         });
         items
-    }
-
-    fn remember_known_qualified_symbols(&self, items: &[CompletionItem]) {
-        remember_known_qualified_symbols(&self.known_qualified_symbols, items);
     }
 
     fn wait_for_symbols(
@@ -748,19 +787,22 @@ impl SymbolHighlighterLookup {
             return;
         }
         let epoch = self.epoch.load(Ordering::Relaxed);
-        let prefix = symbol_highlighter_query_prefix(symbol);
-        if self.already_remembered(&prefix, epoch) {
+        if self.already_remembered(symbol, epoch) {
             return;
         }
-        match self.symbols_cache.poll_or_claim(&prefix, epoch) {
-            CachePoll::Ready(items) => {
-                remember_known_qualified_symbols(&self.known_qualified_symbols, &items);
-                self.mark_remembered(prefix, epoch);
+        match self
+            .definitions_cache
+            .poll_or_claim(&symbol.to_string(), epoch)
+        {
+            CachePoll::Ready(is_defined) => {
+                remember_symbol_definition(&self.known_qualified_symbols, symbol, is_defined);
+                self.mark_remembered(symbol, epoch);
             }
             CachePoll::Spawn => {
-                let _ = self
-                    .job_sender
-                    .send(CompletionJob::Symbols { prefix, epoch });
+                let _ = self.definition_job_sender.send(SymbolDefinitionJob::Check {
+                    symbol: symbol.to_string(),
+                    epoch,
+                });
             }
             CachePoll::Pending => {}
         }
@@ -773,12 +815,11 @@ impl SymbolHighlighterLookup {
         }
 
         let epoch = self.epoch.load(Ordering::Relaxed);
-        let prefix = symbol_highlighter_query_prefix(symbol);
         let deadline = Instant::now() + wait_timeout;
         loop {
-            if let Some(items) = self.symbols_cache.ready(&prefix, epoch) {
-                remember_known_qualified_symbols(&self.known_qualified_symbols, &items);
-                self.mark_remembered(prefix, epoch);
+            if let Some(is_defined) = self.definitions_cache.ready(symbol, epoch) {
+                remember_symbol_definition(&self.known_qualified_symbols, symbol, is_defined);
+                self.mark_remembered(symbol, epoch);
                 return;
             }
 
@@ -790,41 +831,34 @@ impl SymbolHighlighterLookup {
         }
     }
 
-    fn already_remembered(&self, prefix: &str, epoch: u64) -> bool {
+    fn already_remembered(&self, symbol: &str, epoch: u64) -> bool {
         self.remembered
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(prefix)
+            .get(symbol)
             == Some(&epoch)
     }
 
-    fn mark_remembered(&self, prefix: String, epoch: u64) {
+    fn mark_remembered(&self, symbol: &str, epoch: u64) {
         self.remembered
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(prefix, epoch);
+            .insert(symbol.to_string(), epoch);
     }
 }
 
-fn remember_known_qualified_symbols(
-    known_qualified_symbols: &Arc<Mutex<HashSet<String>>>,
-    items: &[CompletionItem],
+fn remember_symbol_definition(
+    known_symbols: &Arc<Mutex<HashSet<String>>>,
+    symbol: &str,
+    is_defined: bool,
 ) {
-    let mut known_symbols = known_qualified_symbols
+    let mut known_symbols = known_symbols
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for item in items {
-        if item.kind != CompletionKind::Symbol {
-            continue;
-        }
-        let symbol = if item.value.contains('`') {
-            item.value.clone()
-        } else if let Some(context) = &item.context {
-            format!("{context}{}", item.value)
-        } else {
-            continue;
-        };
-        known_symbols.insert(symbol);
+    if is_defined {
+        known_symbols.insert(symbol.to_string());
+    } else {
+        known_symbols.remove(symbol);
     }
 }
 
@@ -838,14 +872,6 @@ pub(crate) fn symbol_query_prefix(prefix: &str) -> String {
         .nth(2)
         .map_or(prefix, |(idx, _)| &prefix[..idx])
         .to_string()
-}
-
-pub(crate) fn symbol_highlighter_query_prefix(symbol: &str) -> String {
-    if symbol.contains('`') && !symbol.starts_with("System`") {
-        symbol.to_string()
-    } else {
-        symbol_query_prefix(symbol)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -872,6 +898,13 @@ pub(crate) fn symbol_completion_query(prefix: &str) -> String {
     wolfram_function_call(
         SYMBOL_COMPLETION_QUERY_WL,
         &[wolfram_string_literal(prefix)],
+    )
+}
+
+pub(crate) fn symbol_definition_query(symbol: &str) -> String {
+    wolfram_function_call(
+        SYMBOL_DEFINITION_QUERY_WL,
+        &[wolfram_string_literal(symbol)],
     )
 }
 
