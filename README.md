@@ -152,7 +152,7 @@ Quick list of all features:
 | Keybind        | Description                                                  |
 | -------------- | ------------------------------------------------------------ |
 | `Enter`        | Evaluate input                                               |
-| `Ctrl + C`     | Abort evaluation **[WIP]**                                   |
+| `Ctrl + C`     | Abort evaluation                                             |
 | `Ctrl + D`     | Exit the program                                             |
 | `Ctrl + R`     | Open history browser                                         |
 | `Tab`          | Accept ghost text/current completion or open completion menu |

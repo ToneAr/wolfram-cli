@@ -904,10 +904,6 @@ fn wait_for_packet_activity(
     process: &mut KernelProcess,
     operation: &str,
 ) -> Result<()> {
-    if matches!(process, KernelProcess::External) {
-        return Ok(());
-    }
-
     while !link.is_ready() {
         if let KernelProcess::Launched(process) = process
             && let Some(status) = process
@@ -917,8 +913,10 @@ fn wait_for_packet_activity(
             return kernel_exit_result(status, operation);
         }
 
+        // Connected kernels have no local child process to inspect, but they
+        // must still poll terminal input so Ctrl-C can send WSAbortMessage.
         if take_kernel_interrupt_request() {
-            send_interrupt_message(link)?;
+            send_abort_message(link)?;
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -966,10 +964,12 @@ fn is_ctrl_c_key_event(event: &Event) -> bool {
     )
 }
 
-fn send_interrupt_message(link: &mut Link) -> Result<()> {
-    link.put_message(UrgentMessage::INTERRUPT)
-        .map_err(|err| anyhow!("failed to send WSTP interrupt message: {err:?}"))?;
-    profile_event("wstp.interrupt.sent");
+fn send_abort_message(link: &mut Link) -> Result<()> {
+    // Match the Front End's Alt+. behavior: WSAbortMessage is urgent-message
+    // code 3, while WSInterruptMessage (code 2) only requests an interrupt.
+    link.put_message(UrgentMessage::ABORT)
+        .map_err(|err| anyhow!("failed to send WSTP abort message: {err:?}"))?;
+    profile_event("wstp.abort.sent");
     Ok(())
 }
 
