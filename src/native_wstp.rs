@@ -482,6 +482,9 @@ impl WstpKernelClient {
                 print_kernel_text(text)
             }
         };
+        let mut stream_dialog_marker = |marker: &str| {
+            print_kernel_text(&format!("{}\n", render_dialog_marker(marker, theme)))
+        };
         let packets = read_packets_until_return(
             link,
             &mut self.process,
@@ -490,6 +493,7 @@ impl WstpKernelClient {
             "WSTP EnterTextPacket evaluation",
             Some(&mut loading),
             Some(&mut stream_text),
+            Some(&mut stream_dialog_marker),
         )?;
         drop(loading);
         profile_duration_with("wstp.enter_text.total", start.elapsed(), || {
@@ -515,6 +519,7 @@ impl WstpKernelClient {
             None,
             false,
             "WSTP EvaluatePacket query",
+            None,
             None,
             None,
         )?;
@@ -556,6 +561,9 @@ impl WstpKernelClient {
                 print_kernel_text(text)
             }
         };
+        let mut stream_dialog_marker = |marker: &str| {
+            print_kernel_text(&format!("{}\n", render_dialog_marker(marker, theme)))
+        };
         let packets = read_packets_until_return(
             link,
             &mut self.process,
@@ -564,6 +572,7 @@ impl WstpKernelClient {
             "WSTP EvaluatePacket text evaluation",
             None,
             Some(&mut stream_text),
+            Some(&mut stream_dialog_marker),
         )?;
         profile_duration_with("wstp.eval_text.total", start.elapsed(), || {
             format!("bytes={}", packet_output_bytes(&packets))
@@ -777,6 +786,7 @@ fn read_packets_until_return(
     operation: &str,
     mut loading: Option<&mut EvaluationLoadingIndicator>,
     mut stream_text: Option<&mut dyn FnMut(&str, Option<(&str, &str)>) -> Result<()>>,
+    mut stream_dialog_marker: Option<&mut dyn FnMut(&str) -> Result<()>>,
 ) -> Result<Vec<KernelPacket>> {
     let mut packets = Vec::new();
     let mut pending_message_identifier: Option<(String, String)> = None;
@@ -787,7 +797,11 @@ fn read_packets_until_return(
         trace_packet(operation, &packet);
         if matches!(
             packet,
-            KernelPacket::Text(_) | KernelPacket::Input | KernelPacket::InputString
+            KernelPacket::Text(_)
+                | KernelPacket::BeginDialog(_)
+                | KernelPacket::EndDialog(_)
+                | KernelPacket::Input
+                | KernelPacket::InputString
         ) && let Some(loading) = loading.as_deref_mut()
         {
             loading.hide();
@@ -806,6 +820,16 @@ fn read_packets_until_return(
                     if let Some(loading) = loading.as_deref_mut() {
                         loading.show_below_text(text);
                     }
+                }
+            }
+            KernelPacket::BeginDialog(_) => {
+                if let Some(render) = stream_dialog_marker.as_deref_mut() {
+                    render("enter dialog")?;
+                }
+            }
+            KernelPacket::EndDialog(_) => {
+                if let Some(render) = stream_dialog_marker.as_deref_mut() {
+                    render("exit dialog")?;
                 }
             }
             _ => {}
@@ -1075,6 +1099,8 @@ fn packet_is_terminal(packet: &KernelPacket) -> bool {
 
 
 
+
+
 fn input_request_prompt(packets: &[KernelPacket], text_packets_already_rendered: bool) -> String {
     packets
         .iter()
@@ -1095,9 +1121,30 @@ fn next_input_prompt_after_evaluation(
     previous_prompt: Option<&str>,
     packets: &[KernelPacket],
 ) -> Option<String> {
-    next_input_name_after_result(packets)
+    open_dialog_input_name(packets)
+        .or_else(|| next_input_name_after_result(packets))
         .or_else(|| last_output_name(packets).and_then(next_input_prompt_from_output_name))
         .or_else(|| previous_prompt.and_then(increment_input_prompt))
+}
+
+fn open_dialog_input_name(packets: &[KernelPacket]) -> Option<String> {
+    let begin_index = packets
+        .iter()
+        .rposition(|packet| matches!(packet, KernelPacket::BeginDialog(_)))?;
+    let end_index = packets
+        .iter()
+        .rposition(|packet| matches!(packet, KernelPacket::EndDialog(_)));
+    if end_index.is_some_and(|end_index| end_index > begin_index) {
+        return None;
+    }
+
+    packets[begin_index + 1..]
+        .iter()
+        .rev()
+        .find_map(|packet| match packet {
+            KernelPacket::InputName(prompt) if !prompt.trim().is_empty() => Some(prompt.clone()),
+            _ => None,
+        })
 }
 
 fn next_input_name_after_result(packets: &[KernelPacket]) -> Option<String> {
@@ -1243,6 +1290,14 @@ struct PacketRenderOptions {
     show_output_prompt: bool,
 }
 
+fn render_dialog_marker(marker: &str, theme: Option<&ThemeHandle>) -> String {
+    let marker = format!("({marker})");
+    match theme {
+        Some(theme) => theme.current().styles().comment.paint(marker).to_string(),
+        None => marker,
+    }
+}
+
 fn render_packets(
     packets: &[KernelPacket],
     theme: Option<&ThemeHandle>,
@@ -1299,12 +1354,7 @@ fn render_packets(
             KernelPacket::Syntax(position) => {
                 print_kernel_text(&format!("Syntax error at position {position}\n"))?;
             }
-            KernelPacket::BeginDialog(id) => {
-                print_kernel_text(&format!("BeginDialogPacket[{id}]\n"))?;
-            }
-            KernelPacket::EndDialog(id) => {
-                print_kernel_text(&format!("EndDialogPacket[{id}]\n"))?;
-            }
+            KernelPacket::BeginDialog(_) | KernelPacket::EndDialog(_) => {}
             KernelPacket::Menu { id, title } => {
                 print_kernel_text(&format!("MenuPacket[{id}, {title}]\n"))?;
             }
@@ -1407,10 +1457,11 @@ mod tests {
     use super::{
         KernelExit, KernelPacket, configure_kernel_launch_command, connect_link_args,
         kernel_exit_result, next_input_prompt_after_evaluation, plain_text_result_input,
-        render_message_text_with_color, render_output_name_with_color,
-        render_startup_message_text, rendered_return_text, set_directory_expression,
-        wrap_to_string_query,
+        render_dialog_marker, render_message_text_with_color,
+        render_output_name_with_color, render_startup_message_text,
+        rendered_return_text, set_directory_expression, wrap_to_string_query,
     };
+    use crate::theme::{Theme, ThemeHandle};
     use std::process::{Command, ExitStatus};
 
     #[test]
@@ -1612,6 +1663,40 @@ mod tests {
     }
 
     #[test]
+    fn dialog_markers_use_the_comment_style() {
+        let theme = ThemeHandle::builtin(Theme::dark());
+
+        assert_eq!(
+            render_dialog_marker("enter dialog", Some(&theme)),
+            theme
+                .current()
+                .styles()
+                .comment
+                .paint("(enter dialog)")
+                .to_string()
+        );
+        assert_eq!(
+            render_dialog_marker("exit dialog", Some(&theme)),
+            theme
+                .current()
+                .styles()
+                .comment
+                .paint("(exit dialog)")
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn dialog_markers_are_unstyled_for_the_plain_theme() {
+        let theme = ThemeHandle::builtin(Theme::plain());
+
+        assert_eq!(
+            render_dialog_marker("enter dialog", Some(&theme)),
+            "(enter dialog)"
+        );
+    }
+
+    #[test]
     fn output_name_renders_dark_gray() {
         assert_eq!(
             render_output_name_with_color("Out[7]= ", true),
@@ -1654,6 +1739,23 @@ mod tests {
     }
 
 
+
+
+
+
+
+    #[test]
+    fn next_input_prompt_uses_open_dialog_input_name() {
+        let packets = vec![
+            KernelPacket::BeginDialog(1),
+            KernelPacket::InputName(" In[2]:= ".to_string()),
+        ];
+
+        assert_eq!(
+            next_input_prompt_after_evaluation(Some("In[1]:= "), &packets),
+            Some(" In[2]:= ".to_string())
+        );
+    }
 
     #[test]
     fn next_input_prompt_uses_non_empty_input_name_packet_after_result() {
