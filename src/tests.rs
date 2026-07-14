@@ -104,6 +104,19 @@ fn test_suggestion(value: &str, start: usize, end: usize) -> reedline::Suggestio
     }
 }
 
+#[test]
+fn completion_ignores_stale_cursor_position_after_private_context_completion() {
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let mut completer = WolframCompleter::new(source, ThemeHandle::builtin(Theme::dark()));
+    let line = "WAssistant`Server`Source`Jobs`Private`twikiFindNewRouteroot";
+
+    assert!(completer.complete(line, line.len() + 5).is_empty());
+}
+
 fn temp_completion_dir() -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -1193,6 +1193,13 @@ pub(crate) fn completion_hint_suffix(
 
 impl Completer for WolframCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        // Reedline can briefly retain a cursor position from a buffer that was
+        // just replaced (for example, after accepting a qualified completion).
+        // Never turn that transient mismatch into a slicing panic.
+        if pos > line.len() || !line.is_char_boundary(pos) {
+            return Vec::new();
+        }
+
         let complete_start = Instant::now();
         let epoch = self.source.epoch();
         let generation = self.source.generation();
