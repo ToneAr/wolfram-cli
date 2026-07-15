@@ -2047,6 +2047,17 @@ pub(crate) fn symbol_suggestions(
     matches
         .into_iter()
         .map(|(candidate, value)| {
+            // Reedline uses the replaced span as the menu's highlighted prefix.
+            // Replacing only the segment after an already-typed context keeps that
+            // prefix short, avoiding its internal truncate-then-split panic for
+            // long qualified names.
+            let (replacement, replacement_start) = context_prefix
+                .and_then(|context| {
+                    value
+                        .strip_prefix(context)
+                        .map(|suffix| (suffix.to_string(), start + context.len()))
+                })
+                .unwrap_or_else(|| (value.clone(), start));
             let details = match candidate.kind {
                 CompletionKind::Symbol => {
                     usage.get(&value).cloned().unwrap_or(CompletionItemDetails {
@@ -2073,7 +2084,7 @@ pub(crate) fn symbol_suggestions(
             };
 
             Suggestion {
-                value,
+                value: replacement,
                 description: Some(description),
                 style: Some(style),
                 extra: Some(vec![
@@ -2083,7 +2094,10 @@ pub(crate) fn symbol_suggestions(
                     }
                     .serialize(),
                 ]),
-                span: Span { start, end },
+                span: Span {
+                    start: replacement_start,
+                    end,
+                },
                 append_whitespace: false,
             }
         })

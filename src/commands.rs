@@ -191,7 +191,7 @@ fn run_settings_menu(theme: &ThemeHandle, use_color: bool) -> Result<()> {
     let mut config = load_user_config();
     print_settings_menu(&config, theme);
     loop {
-        let choice = read_menu_line("Choose a setting to change (or q to leave): ")?;
+        let choice = read_menu_line("Choose a setting to change: ")?;
         match choice.trim().to_ascii_lowercase().as_str() {
             "q" | "quit" | "exit" | "done" => break,
             "1" | "theme" => configure_theme(&mut config, theme, use_color)?,
@@ -278,7 +278,6 @@ fn run_settings_menu(theme: &ThemeHandle, use_color: bool) -> Result<()> {
             ),
         }
     }
-    println!("Settings menu closed.");
     Ok(())
 }
 

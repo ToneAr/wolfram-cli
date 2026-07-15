@@ -1118,10 +1118,43 @@ fn reattaches_context_when_names_returns_short_symbol() {
 
     let suggestions = symbol_suggestions(&[candidate], "System`P", 0, 8, &source, test_styles());
 
-    assert_eq!(suggestions[0].value, "System`Plot");
+    assert_eq!(suggestions[0].value, "Plot");
+    assert_eq!(suggestions[0].span, Span { start: "System`".len(), end: 8 });
     assert_eq!(
         suggestions[0].description.as_deref(),
         Some("symbol\nContext: System`\nUsage: Plot[f, {x, xmin, xmax}] plots f.")
+    );
+}
+
+#[test]
+fn long_qualified_symbols_replace_only_the_final_segment() {
+    let source = CompletionSource::with_backend(
+        Arc::new(FakeBackend::empty()),
+        Arc::new(AtomicU64::new(0)),
+        test_user_symbols(),
+    );
+    let prefix = "ServiceFramework`PackageScope`deleteLocalCredentials";
+    let suggestions = symbol_suggestions(
+        &[CompletionItem {
+            value: "deleteLocalCredentials".to_string(),
+            kind: CompletionKind::Symbol,
+            frequency: None,
+            context: Some("ServiceFramework`PackageScope`".to_string()),
+        }],
+        prefix,
+        0,
+        prefix.len(),
+        &source,
+        test_styles(),
+    );
+
+    assert_eq!(suggestions[0].value, "deleteLocalCredentials");
+    assert_eq!(
+        suggestions[0].span,
+        Span {
+            start: "ServiceFramework`PackageScope`".len(),
+            end: prefix.len(),
+        }
     );
 }
 
@@ -1384,11 +1417,14 @@ fn kernel_symbols_inside_contexts_complete_on_backtick_keystroke() {
 
     let suggestions = completer.complete("MyContext`", 10);
 
-    assert!(
-        suggestions
-            .iter()
-            .any(|suggestion| suggestion.value == "MyContext`foo")
-    );
+    assert!(suggestions.iter().any(|suggestion| {
+        suggestion.value == "foo"
+            && suggestion.span
+                == Span {
+                    start: "MyContext`".len(),
+                    end: "MyContext`".len(),
+                }
+    }));
 }
 
 #[test]
