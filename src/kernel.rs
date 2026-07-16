@@ -242,9 +242,16 @@ impl KernelClient {
         self.wstp.input_prompt().map(ToOwned::to_owned)
     }
 
+    /// Polls packets generated independently of the active evaluation, such
+    /// as `TaskObject` output. The REPL calls this while it is idle.
+    pub(crate) fn drain_out_of_band_packets(&mut self, theme: &ThemeHandle) -> Result<String> {
+        self.wstp.drain_out_of_band_packets(Some(theme))
+    }
+
     /// Waits until the kernel has sent its first REPL prompt.
     pub(crate) fn initialize_repl(&mut self) -> Result<()> {
         self.wstp.ensure_initial_prompt_read()?;
+        self.wstp.ensure_secondary_links()?;
         self.ready = true;
         Ok(())
     }

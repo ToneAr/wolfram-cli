@@ -2,6 +2,8 @@
 pub(crate) const EVALUATE_USER_INPUT_WL: &str = include_str!("wl/evaluate_user_input.wl");
 pub(crate) const EVALUATE_SCRIPT_SOURCE_WL: &str = include_str!("wl/evaluate_script_source.wl");
 pub(crate) const OPTIONS_QUERY_WL: &str = include_str!("wl/options_query.wl");
+pub(crate) const SECONDARY_LINK_SETUP_INPUT_WL: &str =
+    include_str!("wl/secondary_link_setup_input.wl");
 pub(crate) const SYMBOL_COMPLETION_QUERY_WL: &str = include_str!("wl/symbol_completion_query.wl");
 pub(crate) const SYMBOL_DEFINITION_QUERY_WL: &str = include_str!("wl/symbol_definition_query.wl");
 pub(crate) const SYMBOL_DETAILS_BATCH_QUERY_WL: &str =

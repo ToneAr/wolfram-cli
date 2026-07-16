@@ -155,6 +155,15 @@ sequenceDiagram
 
 This is why the first REPL interaction can be slower: the kernel process and WSTP link are already started, but the first prompt/readiness handshake and first evaluation setup still need to complete. The REPL overlaps that cost with user think time by running `spawn_kernel_warmup`, which performs a background `query_string("Null")`.
 
+REPL initialization also creates service and preemptive WSTP listeners and asks
+the kernel's `MathLink`CreateFrontEndLinks` machinery to connect to them. The
+main link remains responsible for submitted evaluations, while asynchronous
+`TaskObject` output arrives on the service link. An idle packet pump drains that
+link under the shared kernel mutex and sends rendered output through Reedline's
+external printer, whose timed polling preserves and repaints the active edit
+buffer. The preemptive link is registered as a sharing link so the kernel can
+run scheduled work while the main link is idle.
+
 ## Human evaluation pipeline
 
 Human-entered input uses `EnterTextPacket`, which asks the kernel to parse and evaluate exactly as notebook-style textual input.
@@ -266,6 +275,7 @@ sequenceDiagram
 | `SyntaxPacket`                            | `KernelPacket::Syntax`                      | Printed as `Syntax error at position n`.                                                       |
 | `InputPacket`                             | `KernelPacket::Input`                       | REPL asks the user for expression input and responds with `EnterTextPacket`.                   |
 | `InputStringPacket`                       | `KernelPacket::InputString`                 | REPL asks the user for string input and responds with a raw string packet.                     |
+| `ExpressionPacket`                        | `KernelPacket::EnterExpression`             | Renders asynchronous boxed output from the service link as terminal text.                      |
 | Dialog/menu/display/call packets          | Matching `KernelPacket` variants            | Decoded and either printed diagnostically or ignored, depending on packet type.                |
 
 ### Prompt update strategy
@@ -400,7 +410,7 @@ stateDiagram-v2
     DropKernel --> [*]
 ```
 
-When the REPL exits, `WstpKernelClient` is dropped. Its `Drop` implementation closes the link field without running normal link destruction, waits briefly for the child kernel to exit, then kills and waits for it if needed.
+When the REPL exits, `WstpKernelClient` is dropped. Its `Drop` implementation closes the main, service, and preemptive links without running normal link destruction, waits briefly for the child kernel to exit, then kills and waits for it if needed.
 
 ## Build and release WSTP pipeline
 

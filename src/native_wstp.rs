@@ -24,7 +24,10 @@ use crate::{
     kernel::{KernelExit, kernel_path},
     profiler::{profile_duration, profile_duration_with, profile_event, profile_event_with},
     theme::ThemeHandle,
-    wl::{WSTP_EVALUATE_USER_INPUT_WL, wolfram_function_call, wolfram_string_literal},
+    wl::{
+        SECONDARY_LINK_SETUP_INPUT_WL, WSTP_EVALUATE_USER_INPUT_WL, wolfram_function_call,
+        wolfram_string_literal,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +85,7 @@ const LOADING_TEXT_FRAMES: [&str; 10] = [
 const STARTING_KERNEL_TEXT_FRAMES: [&str; 10] = ["Starting Kernel..."; 10];
 const LOADING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LOADING_FRAME_INTERVAL: Duration = Duration::from_millis(80);
+const MAX_OUT_OF_BAND_PACKETS_PER_POLL: usize = 64;
 
 /// Shows progress while a terminal evaluation is waiting for the kernel.
 ///
@@ -307,6 +311,9 @@ enum KernelProcess {
 pub(crate) struct WstpKernelClient {
     process: KernelProcess,
     link: Option<Link>,
+    service_link: Option<Link>,
+    preemptive_link: Option<Link>,
+    link_protocol: LinkProtocol,
     input_prompt: Option<String>,
     initial_prompt_pending: bool,
     pending_current_directory: Option<PathBuf>,
@@ -342,6 +349,9 @@ impl WstpKernelClient {
         Ok(Self {
             process: KernelProcess::Launched(process),
             link: Some(link),
+            service_link: None,
+            preemptive_link: None,
+            link_protocol: LinkProtocol::SharedMemory,
             input_prompt: None,
             initial_prompt_pending: true,
             pending_current_directory: None,
@@ -377,6 +387,9 @@ impl WstpKernelClient {
         Ok(Self {
             process: KernelProcess::External,
             link: Some(link),
+            service_link: None,
+            preemptive_link: None,
+            link_protocol,
             input_prompt: None,
             initial_prompt_pending: true,
             pending_current_directory: None,
@@ -429,6 +442,42 @@ impl WstpKernelClient {
         self.input_prompt.as_deref()
     }
 
+    /// Reads packets emitted while no evaluation is in flight, such as output
+    /// from a `TaskObject`. These packets are independent of the next request:
+    /// leaving them on the link makes a later request consume stale output.
+    pub(crate) fn drain_out_of_band_packets(
+        &mut self,
+        theme: Option<&ThemeHandle>,
+    ) -> Result<String> {
+        let mut output = String::new();
+        let mut input_prompt = None;
+
+        if let Some(link) = self.service_link.as_mut() {
+            drain_ready_link_packets(
+                link,
+                &mut self.process,
+                theme,
+                "WSTP service link",
+                &mut output,
+                &mut input_prompt,
+            )?;
+        }
+        let link = self.link.as_mut().context("WSTP link is closed")?;
+        drain_ready_link_packets(
+            link,
+            &mut self.process,
+            theme,
+            "WSTP main link out-of-band packet",
+            &mut output,
+            &mut input_prompt,
+        )?;
+        if let Some(prompt) = input_prompt {
+            self.input_prompt = Some(prompt);
+        }
+
+        Ok(output)
+    }
+
     pub(crate) fn ensure_initial_prompt_read(&mut self) -> Result<()> {
         if !self.initial_prompt_pending {
             return Ok(());
@@ -445,6 +494,57 @@ impl WstpKernelClient {
         self.input_prompt = Some(input_prompt);
         self.initial_prompt_pending = false;
         self.disable_kernel_line_wrapping()?;
+        Ok(())
+    }
+
+    pub(crate) fn ensure_secondary_links(&mut self) -> Result<()> {
+        let service_link_head = self.evaluate_to_string("Head[MathLink`$ServiceLink]")?;
+        if service_link_head == "LinkObject" {
+            return Ok(());
+        }
+
+        let protocol = self.link_protocol.clone();
+        let mut service_link = Link::listen(protocol.clone(), "")
+            .map_err(|err| anyhow!("failed to create WSTP service-link listener: {err:?}"))?;
+        let mut preemptive_link = Link::listen(protocol.clone(), "")
+            .map_err(|err| anyhow!("failed to create WSTP preemptive-link listener: {err:?}"))?;
+        let setup_input = secondary_link_setup_input(
+            &service_link.link_name(),
+            &preemptive_link.link_name(),
+            &protocol.to_string(),
+        );
+        let setup_expr = call("System`ToExpression", vec![Expr::string(setup_input)]);
+        let link = self.link.as_mut().context("WSTP link is closed")?;
+        link.put_eval_packet(&setup_expr)
+            .map_err(|err| anyhow!("failed to request WSTP secondary links: {err:?}"))?;
+        link.flush()
+            .map_err(|err| anyhow!("failed to flush WSTP secondary-link request: {err:?}"))?;
+
+        service_link
+            .activate()
+            .map_err(|err| anyhow!("failed to activate WSTP service link: {err:?}"))?;
+        preemptive_link
+            .activate()
+            .map_err(|err| anyhow!("failed to activate WSTP preemptive link: {err:?}"))?;
+
+        let packets = read_packets_until_return(
+            link,
+            &mut self.process,
+            None,
+            false,
+            "WSTP secondary-link setup",
+            None,
+            None,
+            None,
+        )?;
+        let result = packets.iter().rev().find_map(packet_text_result);
+        if result.as_deref() != Some("ok") {
+            bail!("kernel failed to establish WSTP secondary links: {result:?}");
+        }
+
+        profile_event(format!("wstp.secondary_links.ready\tprotocol={protocol:?}"));
+        self.service_link = Some(service_link);
+        self.preemptive_link = Some(preemptive_link);
         Ok(())
     }
 
@@ -542,6 +642,11 @@ impl WstpKernelClient {
             .map_err(|err| anyhow!("failed to flush WSTP link: {err:?}"))?;
         profile_duration("wstp.eval.sent", start.elapsed(), "");
 
+        // Completion and other background queries can still trigger kernel
+        // output (for example, from scheduled tasks). The query result comes
+        // from the Return*Packet below, while TextPackets are out-of-band and
+        // must be forwarded rather than silently consumed.
+        let mut stream_text = |text: &str, _message: Option<(&str, &str)>| print_kernel_text(text);
         let packets = read_packets_until_return(
             link,
             &mut self.process,
@@ -549,7 +654,7 @@ impl WstpKernelClient {
             false,
             "WSTP EvaluatePacket query",
             None,
-            None,
+            Some(&mut stream_text),
             None,
         )?;
         let text = packets
@@ -638,7 +743,14 @@ impl WstpKernelClient {
     fn close(&mut self) {
         match &mut self.process {
             KernelProcess::Launched(process) => {
-                if let Some(link) = self.link.take() {
+                for link in [
+                    self.link.take(),
+                    self.service_link.take(),
+                    self.preemptive_link.take(),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     std::mem::forget(link);
                 }
 
@@ -653,9 +765,117 @@ impl WstpKernelClient {
             }
             KernelProcess::External => {
                 drop(self.link.take());
+                drop(self.service_link.take());
+                drop(self.preemptive_link.take());
             }
         }
     }
+}
+
+fn secondary_link_setup_input(
+    service_link_name: &str,
+    preemptive_link_name: &str,
+    protocol: &str,
+) -> String {
+    wolfram_function_call(
+        SECONDARY_LINK_SETUP_INPUT_WL,
+        &[
+            wolfram_string_literal(service_link_name),
+            wolfram_string_literal(preemptive_link_name),
+            wolfram_string_literal(protocol),
+        ],
+    )
+}
+
+fn drain_ready_link_packets(
+    link: &mut Link,
+    process: &mut KernelProcess,
+    theme: Option<&ThemeHandle>,
+    operation: &str,
+    output: &mut String,
+    input_prompt: &mut Option<String>,
+) -> Result<()> {
+    let mut pending_message_identifier: Option<(String, String)> = None;
+    let mut output_name: Option<String> = None;
+
+    for _ in 0..MAX_OUT_OF_BAND_PACKETS_PER_POLL {
+        if !link.is_ready() {
+            break;
+        }
+        let packet_id = next_ready_packet_id(link, process, operation)?;
+        let packet = read_packet_payload(link, packet_id)?;
+        trace_packet(operation, &packet);
+
+        match &packet {
+            KernelPacket::Message { symbol, tag } => {
+                pending_message_identifier = Some((symbol.clone(), tag.clone()));
+            }
+            KernelPacket::Text(text) => {
+                let text = if let Some((symbol, tag)) = pending_message_identifier.take() {
+                    render_message_text_with_color(
+                        text,
+                        &symbol,
+                        &tag,
+                        message_identifier_color_enabled(theme),
+                    )
+                } else {
+                    text.clone()
+                };
+                output.push_str(&text);
+            }
+            KernelPacket::InputName(prompt) if !prompt.trim().is_empty() => {
+                *input_prompt = Some(prompt.clone());
+            }
+            KernelPacket::OutputName(name) => output_name = Some(name.clone()),
+            KernelPacket::EnterExpression(expr) => {
+                append_packet_output(output, &expression_packet_text(expr));
+            }
+            KernelPacket::Return(expr) | KernelPacket::ReturnExpression(expr) => {
+                let text = expr_string_value(expr).unwrap_or_else(|| expr.to_string());
+                if let Some(text) =
+                    rendered_return_text(&text, output_name.take().as_deref(), theme, false)
+                {
+                    append_packet_output(output, &text);
+                }
+            }
+            KernelPacket::ReturnText(text) => {
+                if let Some(text) =
+                    rendered_return_text(text, output_name.take().as_deref(), theme, false)
+                {
+                    append_packet_output(output, &text);
+                }
+            }
+            KernelPacket::Syntax(position) => {
+                append_packet_output(output, &format!("Syntax error at position {position}"));
+            }
+            KernelPacket::BeginDialog(_) | KernelPacket::EndDialog(_) => {}
+            KernelPacket::Menu { id, title } => {
+                append_packet_output(output, &format!("MenuPacket[{id}, {title}]"));
+            }
+            KernelPacket::Call { function, args } => {
+                append_packet_output(output, &format!("CallPacket[{function}, {args}]"));
+            }
+            KernelPacket::Unknown(id) => {
+                append_packet_output(output, &format!("Unknown WSTP packet {id}"));
+            }
+            KernelPacket::EnterText(text) => {
+                append_packet_output(output, &format!("EnterTextPacket[{text}]"));
+            }
+            KernelPacket::Evaluate(expr) => {
+                append_packet_output(output, &format!("EvaluatePacket[{expr}]"));
+            }
+            KernelPacket::Display
+            | KernelPacket::DisplayEnd
+            | KernelPacket::Input
+            | KernelPacket::InputName(_)
+            | KernelPacket::InputString
+            | KernelPacket::Resume
+            | KernelPacket::Suspend => {}
+        }
+        finish_packet(link, operation)?;
+    }
+
+    Ok(())
 }
 
 fn set_directory_expression(directory: &str) -> String {
@@ -928,6 +1148,23 @@ fn next_packet_id(link: &mut Link, process: &mut KernelProcess, operation: &str)
     }
 }
 
+fn next_ready_packet_id(
+    link: &mut Link,
+    process: &mut KernelProcess,
+    operation: &str,
+) -> Result<i32> {
+    debug_assert!(link.is_ready());
+    match link.raw_next_packet() {
+        Ok(packet_id) => Ok(packet_id),
+        Err(err) => {
+            if let Some(code) = WstpKernelClient::child_exit_code_after_link_error(process) {
+                return Err(KernelExit::new(code).into());
+            }
+            Err(anyhow!("failed to read packet during {operation}: {err:?}"))
+        }
+    }
+}
+
 fn wait_for_packet_activity(
     link: &mut Link,
     process: &mut KernelProcess,
@@ -1122,6 +1359,92 @@ fn packet_is_terminal(packet: &KernelPacket) -> bool {
             | KernelPacket::ReturnText(_)
             | KernelPacket::Syntax(_)
     )
+}
+
+fn append_packet_output(output: &mut String, text: &str) {
+    if !text.is_empty() {
+        output.push_str(text);
+        if !text.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+}
+
+/// Converts the display boxes carried by `ExpressionPacket` to plain text.
+/// When a box has no useful terminal representation, retain its InputForm so
+/// out-of-band kernel output is never silently lost.
+fn expression_packet_text(expr: &Expr) -> String {
+    box_text(expr).unwrap_or_else(|| expr_string_value(expr).unwrap_or_else(|| expr.to_string()))
+}
+
+fn box_text(expr: &Expr) -> Option<String> {
+    if let ExprKind::String(text) = expr.kind() {
+        return Some(text.clone());
+    }
+    let ExprKind::Normal(normal) = expr.kind() else {
+        return None;
+    };
+    let head = normal.head().kind();
+    let ExprKind::Symbol(head) = head else {
+        return None;
+    };
+    let head = head.as_str().rsplit('`').next().unwrap_or(head.as_str());
+    let elements = normal.elements();
+
+    match head {
+        "BoxData" | "InterpretationBox" | "StyleBox" | "TagBox" | "TooltipBox" | "PaneBox" => {
+            elements.first().and_then(box_text)
+        }
+        "RowBox" => box_list_text(elements.first()?),
+        "FractionBox" if elements.len() == 2 => Some(format!(
+            "{}/{}",
+            box_text(&elements[0])?,
+            box_text(&elements[1])?
+        )),
+        "SuperscriptBox" if elements.len() == 2 => Some(format!(
+            "{}^{}",
+            box_text(&elements[0])?,
+            box_text(&elements[1])?
+        )),
+        "SubscriptBox" if elements.len() == 2 => Some(format!(
+            "{}_{}",
+            box_text(&elements[0])?,
+            box_text(&elements[1])?
+        )),
+        "GridBox" => box_grid_text(elements.first()?),
+        _ => None,
+    }
+}
+
+fn box_list_text(expr: &Expr) -> Option<String> {
+    let ExprKind::Normal(normal) = expr.kind() else {
+        return None;
+    };
+    let ExprKind::Symbol(head) = normal.head().kind() else {
+        return None;
+    };
+    if head.as_str().rsplit('`').next()? != "List" {
+        return None;
+    }
+    normal.elements().iter().map(box_text).collect()
+}
+
+fn box_grid_text(expr: &Expr) -> Option<String> {
+    let ExprKind::Normal(normal) = expr.kind() else {
+        return None;
+    };
+    let ExprKind::Symbol(head) = normal.head().kind() else {
+        return None;
+    };
+    if head.as_str().rsplit('`').next()? != "List" {
+        return None;
+    }
+    normal
+        .elements()
+        .iter()
+        .map(|row| box_list_text(row).map(|row| row.replace('\n', " ")))
+        .collect::<Option<Vec<_>>>()
+        .map(|rows| rows.join("\n"))
 }
 
 
@@ -1392,7 +1715,8 @@ fn render_packets(
                 print_kernel_text(&format!("Unknown WSTP packet {id}\n"))?;
             }
             KernelPacket::EnterExpression(expr) => {
-                print_kernel_text(&format!("EnterExpressionPacket[{expr}]\n"))?;
+                print_kernel_text(&expression_packet_text(expr))?;
+                print_kernel_text("\n")?;
             }
             KernelPacket::EnterText(text) => {
                 print_kernel_text(&format!("EnterTextPacket[{text}]\n"))?;
@@ -1483,6 +1807,7 @@ fn wrap_to_string_query(input: &str) -> String {
 mod tests {
     use super::{
         KernelExit, KernelPacket, configure_kernel_launch_command, connect_link_args,
+        expression_packet_text,
         kernel_exit_result, next_input_prompt_after_evaluation, plain_text_result_input,
         render_dialog_marker, render_message_text_with_color,
         render_output_name_with_color, render_startup_message_text,
@@ -1490,6 +1815,7 @@ mod tests {
     };
     use crate::theme::{Theme, ThemeHandle};
     use std::process::{Command, ExitStatus};
+    use wolfram_expr::{Expr, Symbol};
 
     #[test]
     fn kernel_exit_result_preserves_child_exit_code() {
@@ -1753,6 +2079,32 @@ mod tests {
             rendered_return_text("2", Some("Out[1]= "), None, false),
             Some("2".to_string())
         );
+    }
+
+    #[test]
+    fn expression_packet_renders_box_data_as_terminal_text() {
+        let list = |elements| Expr::normal(Symbol::new("System`List"), elements);
+        let row = Expr::normal(
+            Symbol::new("System`RowBox"),
+            vec![list(vec![
+                Expr::string("Thu 16 Jul 2026 15:48:58"),
+                Expr::string(" "),
+                Expr::string("171612824"),
+            ])],
+        );
+        let expr = Expr::normal(Symbol::new("System`BoxData"), vec![row]);
+
+        assert_eq!(
+            expression_packet_text(&expr),
+            "Thu 16 Jul 2026 15:48:58 171612824"
+        );
+    }
+
+    #[test]
+    fn expression_packet_falls_back_to_input_form_when_not_box_data() {
+        let expr = Expr::normal(Symbol::new("System`Plus"), vec![Expr::from(1), Expr::from(2)]);
+
+        assert_eq!(expression_packet_text(&expr), expr.to_string());
     }
 
     #[test]

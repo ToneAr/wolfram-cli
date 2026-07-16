@@ -618,7 +618,7 @@ impl EditMode for HistoryPrimedEditMode {
             }
         }
 
-        let rebuilt = ReedlineRawEvent::convert_from(raw).expect("re-wrapping a non-release event");
+        let rebuilt = ReedlineRawEvent::try_from(raw).expect("re-wrapping a non-release event");
         self.inner.parse_event(rebuilt)
     }
 

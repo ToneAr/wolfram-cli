@@ -1126,6 +1126,7 @@ impl Hinter for WolframCompletionHinter {
         pos: usize,
         _history: &dyn History,
         use_ansi_coloring: bool,
+        _cwd: &str,
     ) -> String {
         self.current_hint.clear();
         let suggestions = self.completer.complete(line, pos);
@@ -1647,6 +1648,7 @@ fn path_completion_suggestions_from(
             );
             Suggestion {
                 value: format_value(&completed),
+                display_override: None,
                 description: Some(if is_dir { "directory" } else { "file" }.to_string()),
                 style: Some(if is_dir {
                     styles.completion_directory
@@ -1656,6 +1658,7 @@ fn path_completion_suggestions_from(
                 extra: None,
                 span: Span { start, end },
                 append_whitespace: false,
+                match_indices: None,
             }
         })
         .collect()
@@ -1887,11 +1890,13 @@ pub(crate) fn command_suggestion(
 ) -> Suggestion {
     Suggestion {
         value: value.to_string(),
+        display_override: None,
         description: Some(description.to_string()),
         style: Some(styles.completion_command),
         extra: None,
         span: Span { start, end },
         append_whitespace: false,
+        match_indices: None,
     }
 }
 
@@ -2085,6 +2090,7 @@ pub(crate) fn symbol_suggestions(
 
             Suggestion {
                 value: replacement,
+                display_override: None,
                 description: Some(description),
                 style: Some(style),
                 extra: Some(vec![
@@ -2099,6 +2105,7 @@ pub(crate) fn symbol_suggestions(
                     end,
                 },
                 append_whitespace: false,
+                match_indices: None,
             }
         })
         .collect()
@@ -2177,6 +2184,7 @@ pub(crate) fn option_suggestions(
         .filter(|candidate| fuzzy_matches(candidate, prefix))
         .map(|candidate| Suggestion {
             value: candidate.clone(),
+            display_override: None,
             description: Some(format!("option for {head}")),
             style: Some(styles.completion_option),
             extra: Some(vec![
@@ -2188,6 +2196,7 @@ pub(crate) fn option_suggestions(
             ]),
             span: Span { start, end },
             append_whitespace: false,
+            match_indices: None,
         })
         .collect()
 }
@@ -2371,6 +2380,7 @@ mod tests {
     fn suggestion(value: &str, source: CompletionSourceKind) -> Suggestion {
         Suggestion {
             value: value.to_string(),
+            display_override: None,
             description: None,
             style: None,
             extra: Some(vec![
@@ -2382,6 +2392,7 @@ mod tests {
             ]),
             span: Span { start: 0, end: 1 },
             append_whitespace: false,
+            match_indices: None,
         }
     }
 

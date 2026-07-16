@@ -11,7 +11,8 @@ use std::{
 
 use anyhow::Result;
 use reedline::{
-    FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, Reedline, ReedlineMenu, Signal,
+    ExternalPrinter, FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, Reedline,
+    ReedlineMenu, Signal,
 };
 
 use crate::{
@@ -107,6 +108,7 @@ pub(crate) fn run_repl(
         features.dynamic_completion && features.completion_ghost_text;
     let ghost_completion_selection = (completion_ghost_text_enabled && !completion_menu_enabled)
         .then(GhostCompletionSelection::new);
+    let external_printer = ExternalPrinter::new(256);
     let mut line_editor = Reedline::create()
         // Deliver terminal pastes as one `Event::Paste`, so the edit mode can
         // insert the complete payload rather than processing its characters.
@@ -160,6 +162,9 @@ pub(crate) fn run_repl(
             )));
         }
     }
+    line_editor = line_editor.with_external_printer(external_printer.clone());
+    line_editor = line_editor.with_poll_interval(Duration::from_millis(25));
+    let packet_pump = OutOfBandPacketPump::start(kernel.clone(), theme.clone(), external_printer);
     loop {
         let prompt = WolframPrompt {
             input_prompt: kernel_input_prompt(&kernel)?.unwrap_or_else(|| "In[1]:= ".to_string()),
@@ -231,7 +236,51 @@ pub(crate) fn run_repl(
         }
     }
 
+    drop(packet_pump);
     Ok(())
+}
+
+/// Polls the secondary service link and main link while the foreground REPL is
+/// idle. Output goes through Reedline so the active command line is repainted.
+struct OutOfBandPacketPump {
+    running: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl OutOfBandPacketPump {
+    fn start(
+        kernel: SharedKernel,
+        theme: ThemeHandle,
+        printer: ExternalPrinter<String>,
+    ) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let worker_running = running.clone();
+        let worker = std::thread::spawn(move || {
+            while worker_running.load(Ordering::Relaxed) {
+                if let Ok(mut kernel) = kernel.try_lock()
+                    && let Ok(output) = kernel.drain_out_of_band_packets(&theme)
+                    && !output.is_empty()
+                {
+                    let _ = printer.print(output);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+
+        Self {
+            running,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for OutOfBandPacketPump {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 const KERNEL_INIT_WARNING_GRACE: Duration = Duration::from_millis(150);

@@ -101,6 +101,8 @@ fn test_suggestion(value: &str, start: usize, end: usize) -> reedline::Suggestio
         extra: None,
         span: Span { start, end },
         append_whitespace: false,
+        display_override: None,
+        match_indices: None,
     }
 }
 
@@ -181,7 +183,7 @@ fn down_cycles_ghost_completion_when_menu_is_disabled() {
     );
     let history = FileBackedHistory::default();
 
-    assert_eq!(hinter.handle("zz", 2, &history, false), "Alpha");
+    assert_eq!(hinter.handle("zz", 2, &history, false, ""), "Alpha");
 
     let mut edit_mode = history_primed_edit_mode(
         completion_edit_mode(false),
@@ -192,7 +194,7 @@ fn down_cycles_ghost_completion_when_menu_is_disabled() {
         edit_mode.parse_event(raw_key(KeyCode::Down, KeyModifiers::NONE)),
         ReedlineEvent::Repaint
     );
-    assert_eq!(hinter.handle("zz", 2, &history, false), "Beta");
+    assert_eq!(hinter.handle("zz", 2, &history, false, ""), "Beta");
 }
 
 #[test]
@@ -551,11 +553,11 @@ fn oversized_paste_is_inserted_once_and_editor_paths_accept_it() {
 }
 
 fn raw_key(code: KeyCode, modifiers: KeyModifiers) -> ReedlineRawEvent {
-    ReedlineRawEvent::convert_from(Event::Key(KeyEvent::new(code, modifiers))).unwrap()
+    ReedlineRawEvent::try_from(Event::Key(KeyEvent::new(code, modifiers))).unwrap()
 }
 
 fn raw_paste(body: &str) -> ReedlineRawEvent {
-    ReedlineRawEvent::convert_from(Event::Paste(body.to_string())).unwrap()
+    ReedlineRawEvent::try_from(Event::Paste(body.to_string())).unwrap()
 }
 
 #[test]
@@ -2246,48 +2248,5 @@ fn typing_hot_path_benchmark() {
     println!(
         "typing hot path: {keystrokes} keystrokes in {elapsed:?} ({:.3} ms/keystroke)",
         elapsed.as_secs_f64() * 1000.0 / keystrokes as f64
-    );
-}
-
-/// The kernel's WSTP text main loop encodes non-ASCII output through
-/// $CharacterEncoding before putting it on the link, so a UTF-8 kernel sends
-/// "⠁" (U+2801) as the three byte-valued characters U+00E2 U+00A0 U+0081.
-/// `decode_kernel_main_loop_text` must invert that encoding.
-#[test]
-fn kernel_main_loop_text_utf8_byte_chars_are_decoded() {
-    use crate::native_wstp::decode_kernel_main_loop_text;
-
-    // Braille ⠁ (U+2801) arrives as its UTF-8 bytes E2 A0 81 as codepoints.
-    assert_eq!(
-        decode_kernel_main_loop_text("\u{e2}\u{a0}\u{81}".to_owned()),
-        "\u{2801}"
-    );
-    // Mixed ASCII + encoded multi-byte sequences.
-    assert_eq!(
-        decode_kernel_main_loop_text("Out \u{e2}\u{a0}\u{81}\u{e2}\u{a1}\u{a2} end".to_owned()),
-        "Out \u{2801}\u{2862} end"
-    );
-    // Pure ASCII is unchanged.
-    assert_eq!(
-        decode_kernel_main_loop_text("In[1]:= ".to_owned()),
-        "In[1]:= "
-    );
-}
-
-#[test]
-fn kernel_main_loop_text_non_utf8_bytes_pass_through() {
-    use crate::native_wstp::decode_kernel_main_loop_text;
-
-    // A kernel with a Latin-1 $CharacterEncoding sends é as the single
-    // byte-valued char U+00E9, which is not valid UTF-8 on its own. Passing
-    // it through unchanged renders the correct character.
-    assert_eq!(
-        decode_kernel_main_loop_text("caf\u{e9}".to_owned()),
-        "caf\u{e9}"
-    );
-    // Characters above U+00FF can't be byte-encoded text; leave unchanged.
-    assert_eq!(
-        decode_kernel_main_loop_text("\u{2801} already decoded".to_owned()),
-        "\u{2801} already decoded"
     );
 }
