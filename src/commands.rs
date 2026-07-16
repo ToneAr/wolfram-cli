@@ -571,6 +571,14 @@ pub(crate) fn run_shell_escape(command: &str) -> Result<ExitStatus> {
         .context("failed to launch shell")
 }
 
+pub(crate) fn top_level_run_exit_code(input: &str) -> Result<Option<i32>> {
+    let Some(command) = top_level_run_command(input) else {
+        return Ok(None);
+    };
+
+    Ok(Some(shell_exit_code(run_shell_escape(&command)?)))
+}
+
 pub(crate) fn top_level_run_command(input: &str) -> Option<String> {
     let mut rest = input.trim();
     rest = rest.strip_prefix("System`").unwrap_or(rest);
@@ -578,11 +586,12 @@ pub(crate) fn top_level_run_command(input: &str) -> Option<String> {
     rest = rest.strip_prefix('[')?.trim_start();
     let (command, after_command) = parse_wolfram_string_literal(rest)?;
     let after_command = after_command.trim_start();
-    after_command
-        .strip_prefix(']')?
-        .trim()
-        .is_empty()
-        .then_some(command)
+    let after_command = after_command.strip_prefix(']')?.trim();
+    (after_command.is_empty() || after_command == ";").then_some(command)
+}
+
+fn shell_exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 fn parse_wolfram_string_literal(input: &str) -> Option<(String, &str)> {
@@ -840,6 +849,10 @@ mod tests {
             top_level_run_command(r#"Run["printf a\nb"]"#),
             Some("printf a\nb".to_string())
         );
+        assert_eq!(
+            top_level_run_command(r#"Run["echo hello"];"#),
+            Some("echo hello".to_string())
+        );
     }
 
     #[test]
@@ -848,5 +861,10 @@ mod tests {
         assert_eq!(top_level_run_command(r#"1 + Run["true"]"#), None);
         assert_eq!(top_level_run_command(r#"Run["true"] + 1"#), None);
         assert_eq!(top_level_run_command(r#"RunProcess[{"echo", "hi"}]"#), None);
+    }
+
+    #[test]
+    fn only_runs_top_level_literal_run_commands() {
+        assert_eq!(top_level_run_exit_code(r#"1 + Run["true"]"#).unwrap(), None);
     }
 }

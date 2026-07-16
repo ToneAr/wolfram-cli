@@ -404,8 +404,45 @@ impl WstpKernelClient {
         separate_input_and_output: bool,
         show_output_prompt: bool,
     ) -> Result<()> {
+        self.evaluate_once_with_input_rewrite(
+            input,
+            input_handler,
+            theme,
+            separate_input_and_output,
+            show_output_prompt,
+            true,
+        )
+    }
+
+    pub(crate) fn evaluate_script_once(
+        &mut self,
+        input: &str,
+        theme: Option<&ThemeHandle>,
+        input_handler: Option<&mut KernelInputHandler<'_>>,
+        separate_input_and_output: bool,
+        show_output_prompt: bool,
+    ) -> Result<()> {
+        self.evaluate_once_with_input_rewrite(
+            input,
+            input_handler,
+            theme,
+            separate_input_and_output,
+            show_output_prompt,
+            false,
+        )
+    }
+
+    fn evaluate_once_with_input_rewrite(
+        &mut self,
+        input: &str,
+        input_handler: Option<&mut KernelInputHandler<'_>>,
+        theme: Option<&ThemeHandle>,
+        separate_input_and_output: bool,
+        show_output_prompt: bool,
+        rewrite_input: bool,
+    ) -> Result<()> {
         let previous_input_prompt = self.input_prompt.clone();
-        let packets = self.evaluate_input_packets(input, input_handler, theme)?;
+        let packets = self.evaluate_input_packets(input, input_handler, theme, rewrite_input)?;
         let input_prompt =
             next_input_prompt_after_evaluation(previous_input_prompt.as_deref(), &packets);
         render_packets(
@@ -594,11 +631,12 @@ impl WstpKernelClient {
         input: &str,
         input_handler: Option<&mut KernelInputHandler<'_>>,
         theme: Option<&ThemeHandle>,
+        rewrite_input: bool,
     ) -> Result<Vec<KernelPacket>> {
         self.ensure_initial_prompt_read()?;
         interrupt::clear_kernel_interrupt_request();
         let start = Instant::now();
-        let input = self.user_input_text_with_pending_initialization(input)?;
+        let input = self.user_input_text_with_pending_initialization(input, rewrite_input)?;
         let link = self.link.as_mut().context("WSTP link is closed")?;
         put_enter_text_packet(link, &input)?;
         profile_duration("wstp.enter_text.sent", start.elapsed(), "");
@@ -678,7 +716,7 @@ impl WstpKernelClient {
         self.ensure_initial_prompt_read()?;
         interrupt::clear_kernel_interrupt_request();
         let start = Instant::now();
-        let input = self.user_input_text_with_pending_initialization(input)?;
+        let input = self.user_input_text_with_pending_initialization(input, true)?;
         let wrapped = plain_text_result_input(&input);
         let expr = call("System`ToExpression", vec![Expr::string(&wrapped)]);
         let link = self.link.as_mut().context("WSTP link is closed")?;
@@ -714,8 +752,16 @@ impl WstpKernelClient {
         Ok(packets)
     }
 
-    fn user_input_text_with_pending_initialization(&mut self, input: &str) -> Result<String> {
-        let input = wstp_user_input_text(input);
+    fn user_input_text_with_pending_initialization(
+        &mut self,
+        input: &str,
+        rewrite_input: bool,
+    ) -> Result<String> {
+        let input = if rewrite_input {
+            wstp_user_input_text(input)
+        } else {
+            input.to_owned()
+        };
         let Some(directory) = self.pending_current_directory.take() else {
             return Ok(input);
         };
@@ -1039,11 +1085,29 @@ fn read_packets_until_return(
 ) -> Result<Vec<KernelPacket>> {
     let mut packets = Vec::new();
     let mut pending_message_identifier: Option<(String, String)> = None;
+    // A prompt emitted by `Input`/`InputString` arrives as an unterminated
+    // TextPacket immediately before the input request. Hold it briefly so the
+    // line editor can render it beside the user's input instead of below it.
+    let mut pending_input_prompt: Option<String> = None;
 
     loop {
         let packet_id = next_packet_id(link, process, operation)?;
         let packet = read_packet_payload(link, packet_id)?;
         trace_packet(operation, &packet);
+        let is_input_request = matches!(packet, KernelPacket::Input | KernelPacket::InputString);
+
+        if !matches!(packet, KernelPacket::Text(_))
+            && let Some(text) = pending_input_prompt.take()
+            && !is_input_request
+        {
+            if let Some(render) = stream_text.as_deref_mut() {
+                render(&text, None)?;
+                if let Some(loading) = loading.as_deref_mut() {
+                    loading.show_below_text(&text);
+                }
+            }
+        }
+
         if matches!(
             packet,
             KernelPacket::Text(_)
@@ -1060,14 +1124,27 @@ fn read_packets_until_return(
                 pending_message_identifier = Some((symbol.clone(), tag.clone()));
             }
             KernelPacket::Text(text) => {
-                if let Some(render) = stream_text.as_deref_mut() {
-                    let pending_message = pending_message_identifier.take();
-                    let message = pending_message
-                        .as_ref()
-                        .map(|(symbol, tag)| (symbol.as_str(), tag.as_str()));
-                    render(text, message)?;
+                if let Some(previous_text) = pending_input_prompt.take()
+                    && let Some(render) = stream_text.as_deref_mut()
+                {
+                    render(&previous_text, None)?;
                     if let Some(loading) = loading.as_deref_mut() {
-                        loading.show_below_text(text);
+                        loading.show_below_text(&previous_text);
+                    }
+                }
+
+                if pending_message_identifier.is_none() && !text.ends_with('\n') {
+                    pending_input_prompt = Some(text.clone());
+                } else {
+                    if let Some(render) = stream_text.as_deref_mut() {
+                        let pending_message = pending_message_identifier.take();
+                        let message = pending_message
+                            .as_ref()
+                            .map(|(symbol, tag)| (symbol.as_str(), tag.as_str()));
+                        render(text, message)?;
+                        if let Some(loading) = loading.as_deref_mut() {
+                            loading.show_below_text(text);
+                        }
                     }
                 }
             }
@@ -1089,11 +1166,11 @@ fn read_packets_until_return(
         let input_request = match packet {
             KernelPacket::Input => Some(KernelInputRequest {
                 kind: KernelInputKind::Expression,
-                prompt: input_request_prompt(&packets, stream_text.is_some()),
+                prompt: input_request_prompt(&packets),
             }),
             KernelPacket::InputString => Some(KernelInputRequest {
                 kind: KernelInputKind::String,
-                prompt: input_request_prompt(&packets, stream_text.is_some()),
+                prompt: input_request_prompt(&packets),
             }),
             _ => None,
         };
@@ -1451,16 +1528,12 @@ fn box_grid_text(expr: &Expr) -> Option<String> {
 
 
 
-fn input_request_prompt(packets: &[KernelPacket], text_packets_already_rendered: bool) -> String {
+fn input_request_prompt(packets: &[KernelPacket]) -> String {
     packets
         .iter()
         .rev()
         .find_map(|packet| match packet {
-            KernelPacket::Text(text) if !text.ends_with('\n') => Some(if text_packets_already_rendered {
-                String::new()
-            } else {
-                text.clone()
-            }),
+            KernelPacket::Text(text) if !text.ends_with('\n') => Some(text.clone()),
             KernelPacket::InputName(text) => Some(text.clone()),
             _ => None,
         })
@@ -1807,7 +1880,7 @@ fn wrap_to_string_query(input: &str) -> String {
 mod tests {
     use super::{
         KernelExit, KernelPacket, configure_kernel_launch_command, connect_link_args,
-        expression_packet_text,
+        expression_packet_text, input_request_prompt,
         kernel_exit_result, next_input_prompt_after_evaluation, plain_text_result_input,
         render_dialog_marker, render_message_text_with_color,
         render_output_name_with_color, render_startup_message_text,
@@ -2115,6 +2188,13 @@ mod tests {
             render_message_text_with_color(text, "System`Power", "infy", true),
             text
         );
+    }
+
+    #[test]
+    fn input_request_uses_the_preceding_unterminated_text_as_its_prompt() {
+        let packets = vec![KernelPacket::Text("> ".to_string())];
+
+        assert_eq!(input_request_prompt(&packets), "> ");
     }
 
 

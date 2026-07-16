@@ -255,12 +255,27 @@ fn invokes_wolfram_files_as_immediate_function_calls() {
 }
 
 #[test]
-fn script_source_evaluation_suppresses_null_results() {
+fn script_source_evaluation_only_returns_explicit_return_values() {
     let compact_source = EVALUATE_SCRIPT_SOURCE_WL
         .split_whitespace()
         .collect::<String>();
 
-    assert!(compact_source.contains("If[result===Null,\"\",result]"));
+    assert!(compact_source.contains("MatchQ[held,HoldComplete[Return[_]]]"));
+    assert!(compact_source.contains("MatchQ[held,HoldComplete[Run[_String]]]"));
+    assert!(compact_source.contains("MatchQ[held,HoldComplete[Return[Run[_String]]]]"));
+    assert!(compact_source.contains("runCommand[command_String]:=RunProcess["));
+    assert!(compact_source.contains("splitCompoundExpressions[expression_]:=If["));
+    assert!(compact_source.contains("pending=splitCompoundExpressions[held]"));
+    assert!(compact_source.contains("SetAttributes[{promptedInput,promptedInputString},HoldAll]"));
+    assert!(compact_source.contains("WriteString[$Output,ToString[Unevaluated[prompt],OutputForm]]"));
+    assert!(compact_source.contains("HoldPattern[InputString[prompt_]]:>promptedInputString[prompt]"));
+    assert!(compact_source.contains("All"));
+    assert!(compact_source.contains("result=processResult[\"ExitCode\"]"));
+    assert!(compact_source.contains(
+        "held/.HoldComplete[Return[value_]]:>HoldComplete[value]"
+    ));
+    assert!(compact_source.contains("result=ReleaseHold["));
+    assert!(compact_source.contains("result],Close[stream]"));
 }
 
 #[test]

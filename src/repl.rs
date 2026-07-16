@@ -1,7 +1,6 @@
 use std::{
     collections::HashSet,
     io::{self, IsTerminal},
-    process::ExitStatus,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -17,8 +16,8 @@ use reedline::{
 
 use crate::{
     commands::{
-        CommandAction, ConfigMode, execute_repl_command, execute_shell_escape, run_shell_escape,
-        top_level_run_command,
+        CommandAction, ConfigMode, execute_repl_command, execute_shell_escape,
+        top_level_run_exit_code,
     },
     completion::{
         CompletionSource, GhostCompletionSelection, WolframCompleter, WolframCompletionHinter,
@@ -201,12 +200,9 @@ pub(crate) fn run_repl(
                     }
                     continue;
                 }
-                let evaluation_input = if let Some(command) = top_level_run_command(input) {
-                    let status = run_shell_escape(&command)?;
-                    shell_exit_code(status).to_string()
-                } else {
-                    input.to_string()
-                };
+                let evaluation_input = top_level_run_exit_code(input)?
+                    .map(|exit_code| exit_code.to_string())
+                    .unwrap_or_else(|| input.to_string());
                 let (mut kernel, may_be_slow) = lock_kernel_for_repl_input(&kernel)?;
                 if may_be_slow {
                     println!("\n{}: Kernel is starting up", "Wolfie::init");
@@ -284,10 +280,6 @@ impl Drop for OutOfBandPacketPump {
 }
 
 const KERNEL_INIT_WARNING_GRACE: Duration = Duration::from_millis(150);
-
-fn shell_exit_code(status: ExitStatus) -> i32 {
-    status.code().unwrap_or(1)
-}
 
 fn lock_kernel_for_repl_input(
     kernel: &SharedKernel,

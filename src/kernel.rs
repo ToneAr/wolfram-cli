@@ -3,6 +3,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -16,6 +17,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use wolfram_app_discovery::WolframApp;
 
 use crate::{
+    commands::top_level_run_exit_code,
     native_wstp,
     profiler::profile_duration,
     theme::{Theme, ThemeHandle},
@@ -198,7 +200,10 @@ impl KernelClient {
 
     pub(crate) fn evaluate_once(&mut self, input: &str, use_color: bool) -> Result<()> {
         let theme = (!use_color).then(|| ThemeHandle::builtin(Theme::plain()));
-        self.evaluate_text(input, theme.as_ref())
+        if !self.evaluate_top_level_run(input, theme.as_ref())? {
+            self.evaluate_text(input, theme.as_ref())?;
+        }
+        Ok(())
     }
 
     pub(crate) fn evaluate_file(
@@ -223,7 +228,16 @@ impl KernelClient {
         );
         let theme = (!use_color).then(|| ThemeHandle::builtin(Theme::plain()));
 
-        self.evaluate_text(&input, theme.as_ref())
+        let mut input_handler = |request: &native_wstp::KernelInputRequest| {
+            read_script_input(request)
+        };
+        self.evaluate_script(
+            &input,
+            theme.as_ref(),
+            Some(&mut input_handler),
+            false,
+            false,
+        )
     }
 
     pub(crate) fn status(&self) -> KernelStatus {
@@ -294,6 +308,36 @@ impl KernelClient {
         Ok(())
     }
 
+    fn evaluate_script(
+        &mut self,
+        input: &str,
+        theme: Option<&ThemeHandle>,
+        input_handler: Option<
+            &mut dyn FnMut(&native_wstp::KernelInputRequest) -> Result<Option<String>>,
+        >,
+        separate_input_and_output: bool,
+        show_output_prompt: bool,
+    ) -> Result<()> {
+        let _activity = ActivityGuard::new(self.active.clone());
+        self.wstp.evaluate_script_once(
+            input,
+            theme,
+            input_handler,
+            separate_input_and_output,
+            show_output_prompt,
+        )?;
+        self.ready = true;
+        Ok(())
+    }
+
+    fn evaluate_top_level_run(&mut self, input: &str, theme: Option<&ThemeHandle>) -> Result<bool> {
+        let Some(exit_code) = top_level_run_exit_code(input)? else {
+            return Ok(false);
+        };
+        self.evaluate_text(&exit_code.to_string(), theme)?;
+        Ok(true)
+    }
+
     fn evaluate_text(&mut self, input: &str, theme: Option<&ThemeHandle>) -> Result<()> {
         let _activity = ActivityGuard::new(self.active.clone());
         self.wstp.evaluate_text_once(input, theme)?;
@@ -330,6 +374,24 @@ impl KernelClient {
         );
         Ok(output)
     }
+}
+
+fn read_script_input(request: &native_wstp::KernelInputRequest) -> Result<Option<String>> {
+    if !request.prompt.is_empty() {
+        print!("{}", request.prompt);
+        io::stdout().flush().context("failed to flush script input prompt")?;
+    }
+
+    let mut input = String::new();
+    if io::stdin()
+        .read_line(&mut input)
+        .context("failed to read script input")?
+        == 0
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(input.trim_end_matches(['\r', '\n']).to_string()))
 }
 
 fn read_script_source(file: &Path) -> Result<String> {
