@@ -82,7 +82,17 @@ const LOADING_TEXT_FRAMES: [&str; 10] = [
 	"Evaluating...",
 	"Evaluating",
 ];
-const STARTING_KERNEL_TEXT_FRAMES: [&str; 10] = ["Starting Kernel..."; 10];
+const STARTING_KERNEL_TEXT_FRAMES: [&str; 10] = ["Evaluating",
+	"Starting Kernel.",
+	"Starting Kernel.",
+	"Starting Kernel.",
+	"Starting Kernel..",
+	"Starting Kernel..",
+	"Starting Kernel...",
+	"Starting Kernel...",
+	"Starting Kernel...",
+	"Starting Kernel",
+];
 const LOADING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LOADING_FRAME_INTERVAL: Duration = Duration::from_millis(80);
 const MAX_OUT_OF_BAND_PACKETS_PER_POLL: usize = 64;

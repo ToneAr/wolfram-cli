@@ -93,8 +93,6 @@ flowchart TD
     ExecCandidate -->|no| PathFallback[WolframKernel on PATH]
 ```
 
-
-
 ## WSTP launch pipeline
 
 The native WSTP backend starts a Wolfram Kernel in WSTP mode and connects to it over a shared-memory link.
@@ -156,9 +154,8 @@ sequenceDiagram
 This is why the first REPL interaction can be slower: the kernel process and WSTP link are already started, but the first prompt/readiness handshake and first evaluation setup still need to complete. The REPL overlaps that cost with user think time by running `spawn_kernel_warmup`, which performs a background `query_string("Null")`.
 
 REPL initialization also creates service and preemptive WSTP listeners and asks
-the kernel's `MathLink`CreateFrontEndLinks` machinery to connect to them. The
-main link remains responsible for submitted evaluations, while asynchronous
-`TaskObject` output arrives on the service link. An idle packet pump drains that
+the kernel's `MathLink`CreateFrontEndLinks`machinery to connect to them. The
+main link remains responsible for submitted evaluations, while asynchronous`TaskObject` output arrives on the service link. An idle packet pump drains that
 link under the shared kernel mutex and sends rendered output through Reedline's
 external printer, whose timed polling preserves and repaints the active edit
 buffer. The preemptive link is registered as a sharing link so the kernel can
@@ -264,19 +261,19 @@ sequenceDiagram
 
 ### Packet handling table
 
-| WSTP packet                               | Internal enum                               | Main behavior                                                                                  |
-| ----------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `InputNamePacket`                         | `KernelPacket::InputName`                   | Stores or updates the displayed `In[n]:=` prompt.                                              |
-| `OutputNamePacket`                        | `KernelPacket::OutputName`                  | Saved and printed before the following return value.                                           |
-| `TextPacket`                              | `KernelPacket::Text`                        | Printed directly unless it is the prompt text immediately before an input request.             |
+| WSTP packet                               | Internal enum                               | Main behavior                                                                                                                      |
+| ----------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `InputNamePacket`                         | `KernelPacket::InputName`                   | Stores or updates the displayed `In[n]:=` prompt.                                                                                  |
+| `OutputNamePacket`                        | `KernelPacket::OutputName`                  | Saved and printed before the following return value.                                                                               |
+| `TextPacket`                              | `KernelPacket::Text`                        | Printed directly unless it is the prompt text immediately before an input request.                                                 |
 | `MessagePacket`                           | `KernelPacket::Message`                     | Identifies the following message `TextPacket`; that text is printed immediately, including while the initial prompt is being read. |
-| `ReturnPacket` / `ReturnExpressionPacket` | `KernelPacket::Return` / `ReturnExpression` | Rendered as expression text, or as the raw string if the expression is a string.               |
-| `ReturnTextPacket`                        | `KernelPacket::ReturnText`                  | Rendered as text.                                                                              |
-| `SyntaxPacket`                            | `KernelPacket::Syntax`                      | Printed as `Syntax error at position n`.                                                       |
-| `InputPacket`                             | `KernelPacket::Input`                       | REPL asks the user for expression input and responds with `EnterTextPacket`.                   |
-| `InputStringPacket`                       | `KernelPacket::InputString`                 | REPL asks the user for string input and responds with a raw string packet.                     |
-| `ExpressionPacket`                        | `KernelPacket::EnterExpression`             | Renders asynchronous boxed output from the service link as terminal text.                      |
-| Dialog/menu/display/call packets          | Matching `KernelPacket` variants            | Decoded and either printed diagnostically or ignored, depending on packet type.                |
+| `ReturnPacket` / `ReturnExpressionPacket` | `KernelPacket::Return` / `ReturnExpression` | Rendered as expression text, or as the raw string if the expression is a string.                                                   |
+| `ReturnTextPacket`                        | `KernelPacket::ReturnText`                  | Rendered as text.                                                                                                                  |
+| `SyntaxPacket`                            | `KernelPacket::Syntax`                      | Printed as `Syntax error at position n`.                                                                                           |
+| `InputPacket`                             | `KernelPacket::Input`                       | REPL asks the user for expression input and responds with `EnterTextPacket`.                                                       |
+| `InputStringPacket`                       | `KernelPacket::InputString`                 | REPL asks the user for string input and responds with a raw string packet.                                                         |
+| `ExpressionPacket`                        | `KernelPacket::EnterExpression`             | Renders asynchronous boxed output from the service link as terminal text.                                                          |
+| Dialog/menu/display/call packets          | Matching `KernelPacket` variants            | Decoded and either printed diagnostically or ignored, depending on packet type.                                                    |
 
 ### Prompt update strategy
 

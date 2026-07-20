@@ -123,27 +123,27 @@ Quick list of all features:
 
 1. **Symbol completion**
 
-   ![symbols](docs/img/symbols.png)
+    ![symbols](docs/img/symbols.png)
 
 2. **Context completion**
 
-   ![contexts](docs/img/contexts.png)
+    ![contexts](docs/img/contexts.png)
 
 3. **Fuzzy matching** **[WIP]**
 
-   ![fuzzy](docs/img/fuzzy.png)
+    ![fuzzy](docs/img/fuzzy.png)
 
 4. **File and directory autocomplete**
 
-   ![filesystem](docs/img/filesystem.png)
+    ![filesystem](docs/img/filesystem.png)
 
 5. **System command completion (:)**
 
-   ![commands](docs/img/commands.png)
+    ![commands](docs/img/commands.png)
 
 6. **Quick shell mode (:!)**
 
-   ![shell](docs/img/shell.png)
+    ![shell](docs/img/shell.png)
 
 ## Completion
 
@@ -196,9 +196,9 @@ The same defaults can be set in `config.json` under `command` with `completion-g
 
 Lines that start with `:` are handled by the CLI instead of being evaluated as Wolfram Language input:
 
-| Command       | Description                   |
-| ------------- | ----------------------------- |
-| :clear        | Clear the console             |
+| Command       | Description                     |
+| ------------- | ------------------------------- |
+| :clear        | Clear the console               |
 | :setting      | Open the friendly settings menu |
 | :config       | Open the friendly settings menu |
 | :config show  | Show config file location       |
@@ -303,8 +303,6 @@ Colors can be ANSI indexes (`208`), RGB arrays (`[255, 128, 0]`), hex strings (`
 
 Set `WOLFRAM_KERNEL` to override the kernel executable. Without that override, the CLI asks `wolframscript -showkernels` for the best local kernel path, falls back to `wolfram-app-discovery`, and prefers the native kernel binary under `SystemFiles/Kernel/Binaries` before falling back to `WolframKernel` on `PATH`.
 
-
-
 ## Kernel during build
 
 The `wstp` crate links Wolfram's WSTP static library at build time. A build machine must have a Wolfram installation or WSTP SDK for the Rust target being built. If discovery does not find it, set `WSTP_COMPILER_ADDITIONS_DIRECTORY` to the target's `SystemFiles/Links/WSTP/DeveloperKit/<SystemID>/CompilerAdditions` directory.
@@ -315,14 +313,14 @@ GitHub Actions builds packaged binaries when a `v*` or `build*` tag is pushed. `
 
 Release builds run on GitHub-hosted runners. Because GitHub-hosted runners do not include Wolfram and `wstp-sys` links the target WSTP static library during `cargo build`, the workflow extracts the required `CompilerAdditions` from official Wolfram Engine artifacts before building:
 
-| Artifact                 | Runner           | Build environment | Rust target                | WSTP source                 |
-| ------------------------ | ---------------- | ----------------- | -------------------------- | --------------------------- |
-| `linux-ubuntu24-x86_64`  | `ubuntu-latest`  | Native Ubuntu     | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
-| `linux-rhel8-x86_64`     | `ubuntu-latest`  | `rockylinux:8`    | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
-| `linux-rhel9-x86_64`     | `ubuntu-latest`  | `rockylinux:9`    | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
-| `macos-x86_64`           | `macos-15-intel` | Native macOS      | `x86_64-apple-darwin`      | Wolfram Engine macOS DMG    |
-| `macos-aarch64`          | `macos-15`       | Native macOS      | `aarch64-apple-darwin`     | Wolfram Engine macOS DMG    |
-| `windows-x86_64`         | `windows-latest` | Native Windows    | `x86_64-pc-windows-msvc`   | Wolfram Engine Windows MSI  |
+| Artifact                | Runner           | Build environment | Rust target                | WSTP source                 |
+| ----------------------- | ---------------- | ----------------- | -------------------------- | --------------------------- |
+| `linux-ubuntu24-x86_64` | `ubuntu-latest`  | Native Ubuntu     | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
+| `linux-rhel8-x86_64`    | `ubuntu-latest`  | `rockylinux:8`    | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
+| `linux-rhel9-x86_64`    | `ubuntu-latest`  | `rockylinux:9`    | `x86_64-unknown-linux-gnu` | Wolfram Engine Docker image |
+| `macos-x86_64`          | `macos-15-intel` | Native macOS      | `x86_64-apple-darwin`      | Wolfram Engine macOS DMG    |
+| `macos-aarch64`         | `macos-15`       | Native macOS      | `aarch64-apple-darwin`     | Wolfram Engine macOS DMG    |
+| `windows-x86_64`        | `windows-latest` | Native Windows    | `x86_64-pc-windows-msvc`   | Wolfram Engine Windows MSI  |
 
 Locally, set `WSTP_COMPILER_ADDITIONS_DIRECTORY` if automatic discovery does not find the target's `SystemFiles/Links/WSTP/DeveloperKit/<SystemID>/CompilerAdditions` directory. Linux builds also need the system `uuid` library available for linking, for example the `uuid-dev` package on Debian/Ubuntu systems.
 

@@ -1,147 +1,147 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
-  "title": "Wolfie config",
-  "description": "User configuration for wolfie config.json.",
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "$schema": {
-      "description": "Optional schema URI for editor validation.",
-      "type": "string"
-    },
-    "theme": {
-      "description": "Theme name to select when the REPL starts.",
-      "type": "string",
-      "minLength": 1
-    },
-    "command": {
-      "description": "Default command-line options. Explicit CLI flags override these defaults.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "lightweight": {
-          "description": "Reduce REPL overhead by disabling history, dynamic completion workers, caches and kernel queries, and background kernel warm-up.",
-          "type": "boolean"
-        },
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
+	"title": "Wolfie config",
+	"description": "User configuration for wolfie config.json.",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"$schema": {
+			"description": "Optional schema URI for editor validation.",
+			"type": "string"
+		},
+		"theme": {
+			"description": "Theme name to select when the REPL starts.",
+			"type": "string",
+			"minLength": 1
+		},
+		"command": {
+			"description": "Default command-line options. Explicit CLI flags override these defaults.",
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"lightweight": {
+					"description": "Reduce REPL overhead by disabling history, dynamic completion workers, caches and kernel queries, and background kernel warm-up.",
+					"type": "boolean"
+				},
 
-        "no-color": {
-          "description": "Disable ANSI coloring.",
-          "type": "boolean"
-        },
-        "no_color": {
-          "description": "Alias for no-color.",
-          "type": "boolean"
-        },
-        "no-welcome": {
-          "description": "Start the REPL without printing the welcome banner.",
-          "type": "boolean"
-        },
-        "no_welcome": {
-          "description": "Alias for no-welcome.",
-          "type": "boolean"
-        },
-        "no-prompt": {
-          "description": "Disable REPL input/output prompts and the welcome banner.",
-          "type": "boolean"
-        },
-        "no_prompt": {
-          "description": "Alias for no-prompt.",
-          "type": "boolean"
-        },
-        "completion-ghost-text": {
-          "description": "Enable inline ghost text completion hints. Disabled by default.",
-          "type": "boolean"
-        },
-        "completion_ghost_text": {
-          "description": "Alias for completion-ghost-text.",
-          "type": "boolean"
-        },
-        "no-completion-ghost-text": {
-          "description": "Disable inline ghost text completion hints. Kept for overriding older configs or explicit opt-out.",
-          "type": "boolean"
-        },
-        "no_completion_ghost_text": {
-          "description": "Alias for no-completion-ghost-text.",
-          "type": "boolean"
-        },
-        "no-completion-menu": {
-          "description": "Disable the popup completion menu while leaving completion-backed ghost text available unless separately disabled.",
-          "type": "boolean"
-        },
-        "no_completion_menu": {
-          "description": "Alias for no-completion-menu.",
-          "type": "boolean"
-        },
-        "linkconnect": {
-          "description": "Connect to an existing WSTP link instead of launching a new kernel.",
-          "type": "boolean"
-        },
-        "linkname": {
-          "description": "WSTP link name to use with linkconnect.",
-          "type": "string",
-          "minLength": 1
-        },
-        "linkprotocol": {
-          "description": "WSTP link protocol to use with linkconnect.",
-          "type": "string",
-          "pattern": "^([Ii][Nn][Tt][Rr][Aa][Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Ss][Hh][Aa][Rr][Ee][Dd][Mm][Ee][Mm][Oo][Rr][Yy]|[Tt][Cc][Pp][Ii][Pp])$"
-        },
-        "linkmode": {
-          "description": "WSTP link mode to use when launching or connecting to a Wolfram Kernel.",
-          "type": "string",
-          "minLength": 1
-        },
-        "linkoptions": {
-          "description": "WSTP link options integer to use when launching or connecting to a Wolfram Kernel.",
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 4294967295
-        },
-        "linkinit": {
-          "description": "When linkconnect is used with linkoptions 4, initialize the connected kernel by setting its current directory to wolfie's launch directory.",
-          "type": "boolean"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "linkconnect": {
-                "const": true
-              }
-            },
-            "required": ["linkconnect"]
-          },
-          "then": {
-            "anyOf": [
-              {
-                "required": ["linkname"]
-              }
-            ]
-          }
-        }
-      ]
-    }
-  },
-  "examples": [
-    {
-      "$schema": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
-      "theme": "dark",
-      "command": {
-        "lightweight": false,
-        "no-color": false,
-        "no-welcome": false,
-        "no-prompt": false,
-        "completion-ghost-text": false,
-        "no-completion-menu": false,
-        "linkconnect": false,
-        "linkname": "my-link",
-        "linkprotocol": "SharedMemory",
-        "linkmode": "Listen",
-        "linkoptions": 4,
-        "linkinit": false
-      }
-    }
-  ]
+				"no-color": {
+					"description": "Disable ANSI coloring.",
+					"type": "boolean"
+				},
+				"no_color": {
+					"description": "Alias for no-color.",
+					"type": "boolean"
+				},
+				"no-welcome": {
+					"description": "Start the REPL without printing the welcome banner.",
+					"type": "boolean"
+				},
+				"no_welcome": {
+					"description": "Alias for no-welcome.",
+					"type": "boolean"
+				},
+				"no-prompt": {
+					"description": "Disable REPL input/output prompts and the welcome banner.",
+					"type": "boolean"
+				},
+				"no_prompt": {
+					"description": "Alias for no-prompt.",
+					"type": "boolean"
+				},
+				"completion-ghost-text": {
+					"description": "Enable inline ghost text completion hints. Disabled by default.",
+					"type": "boolean"
+				},
+				"completion_ghost_text": {
+					"description": "Alias for completion-ghost-text.",
+					"type": "boolean"
+				},
+				"no-completion-ghost-text": {
+					"description": "Disable inline ghost text completion hints. Kept for overriding older configs or explicit opt-out.",
+					"type": "boolean"
+				},
+				"no_completion_ghost_text": {
+					"description": "Alias for no-completion-ghost-text.",
+					"type": "boolean"
+				},
+				"no-completion-menu": {
+					"description": "Disable the popup completion menu while leaving completion-backed ghost text available unless separately disabled.",
+					"type": "boolean"
+				},
+				"no_completion_menu": {
+					"description": "Alias for no-completion-menu.",
+					"type": "boolean"
+				},
+				"linkconnect": {
+					"description": "Connect to an existing WSTP link instead of launching a new kernel.",
+					"type": "boolean"
+				},
+				"linkname": {
+					"description": "WSTP link name to use with linkconnect.",
+					"type": "string",
+					"minLength": 1
+				},
+				"linkprotocol": {
+					"description": "WSTP link protocol to use with linkconnect.",
+					"type": "string",
+					"pattern": "^([Ii][Nn][Tt][Rr][Aa][Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Ss][Hh][Aa][Rr][Ee][Dd][Mm][Ee][Mm][Oo][Rr][Yy]|[Tt][Cc][Pp][Ii][Pp])$"
+				},
+				"linkmode": {
+					"description": "WSTP link mode to use when launching or connecting to a Wolfram Kernel.",
+					"type": "string",
+					"minLength": 1
+				},
+				"linkoptions": {
+					"description": "WSTP link options integer to use when launching or connecting to a Wolfram Kernel.",
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 4294967295
+				},
+				"linkinit": {
+					"description": "When linkconnect is used with linkoptions 4, initialize the connected kernel by setting its current directory to wolfie's launch directory.",
+					"type": "boolean"
+				}
+			},
+			"allOf": [
+				{
+					"if": {
+						"properties": {
+							"linkconnect": {
+								"const": true
+							}
+						},
+						"required": ["linkconnect"]
+					},
+					"then": {
+						"anyOf": [
+							{
+								"required": ["linkname"]
+							}
+						]
+					}
+				}
+			]
+		}
+	},
+	"examples": [
+		{
+			"$schema": "https://raw.githubusercontent.com/ToneAr/wolfie/main/schemas/config.schema.json",
+			"theme": "dark",
+			"command": {
+				"lightweight": false,
+				"no-color": false,
+				"no-welcome": false,
+				"no-prompt": false,
+				"completion-ghost-text": false,
+				"no-completion-menu": false,
+				"linkconnect": false,
+				"linkname": "my-link",
+				"linkprotocol": "SharedMemory",
+				"linkmode": "Listen",
+				"linkoptions": 4,
+				"linkinit": false
+			}
+		}
+	]
 }
