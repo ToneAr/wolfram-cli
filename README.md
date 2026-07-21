@@ -301,7 +301,7 @@ Colors can be ANSI indexes (`208`), RGB arrays (`[255, 128, 0]`), hex strings (`
 
 ## Kernel Discovery
 
-Set `WOLFRAM_KERNEL` to override the kernel executable. Without that override, the CLI asks `wolframscript -showkernels` for the best local kernel path, falls back to `wolfram-app-discovery`, and prefers the native kernel binary under `SystemFiles/Kernel/Binaries` before falling back to `WolframKernel` on `PATH`.
+Set `WOLFRAM_KERNEL` to override the kernel executable. Without that override, the CLI asks `wolframscript -showkernels` for the best local kernel path, accepting both `WolframKernel` and the `wolfram` launcher reported by newer products. It checks the native kernel under `SystemFiles/Kernel/Binaries`, the installation root, and `Executables`, then falls back to the reported launcher, `wolfram-app-discovery`, and finally `WolframKernel` on `PATH`.
 
 ## Kernel during build
 

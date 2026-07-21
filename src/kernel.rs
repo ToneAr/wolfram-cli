@@ -471,12 +471,20 @@ fn os_string_to_wolfram_string(value: &std::ffi::OsStr, label: &str) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::{
-        ScriptInvocation, read_input_from_streams, script_command_line,
-        script_evaluation_environment, script_input_file_name,
+        ScriptInvocation, kernel_binary_name, kernel_path_in_installation,
+        read_input_from_streams, reported_kernel_installation_directory, script_command_line,
+        script_evaluation_environment, script_input_file_name, showkernels_kernel_path_from_output,
         strip_shebang_preserving_line_numbers,
     };
     use crate::native_wstp::{KernelInputKind, KernelInputRequest};
-    use std::{env, ffi::OsString, io::Cursor, path::Path};
+    use std::{
+        env,
+        ffi::OsString,
+        fs,
+        io::Cursor,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn terminal_input_writes_prompt_and_strips_line_ending() {
@@ -549,6 +557,79 @@ mod tests {
             "None"
         );
     }
+
+    #[test]
+    fn showkernels_accepts_wolfram_executable_from_windows_product_installation() {
+        let output = r#"
+Among all detected Wolfram product installations, the best wolfram.exe location is the following:
+        C:/Program Files/Wolfram Research/Wolfram/15.0 New/wolfram.exe
+
+Among all detected Wolfram Engine installations, the best wolfram.exe location is the following:
+"#;
+
+        assert_eq!(
+            showkernels_kernel_path_from_output(output),
+            Some(PathBuf::from(
+                "C:/Program Files/Wolfram Research/Wolfram/15.0 New/wolfram.exe"
+            ))
+        );
+    }
+
+    #[test]
+    fn showkernels_prefers_explicit_wolframkernel_over_product_launcher() {
+        let output = r#"
+C:/Program Files/Wolfram Research/Wolfram/15.0/wolfram.exe
+C:/Program Files/Wolfram Research/Wolfram Engine/15.0/WolframKernel.exe
+"#;
+
+        assert_eq!(
+            showkernels_kernel_path_from_output(output),
+            Some(PathBuf::from(
+                "C:/Program Files/Wolfram Research/Wolfram Engine/15.0/WolframKernel.exe"
+            ))
+        );
+    }
+
+    #[test]
+    fn reported_windows_kernel_uses_its_parent_as_installation_directory() {
+        let kernel = Path::new("C:/Program Files/Wolfram Research/Wolfram/15.0 New/wolfram.exe");
+
+        assert_eq!(
+            reported_kernel_installation_directory(kernel),
+            Some(PathBuf::from(
+                "C:/Program Files/Wolfram Research/Wolfram/15.0 New"
+            ))
+        );
+    }
+
+    #[test]
+    fn reported_executables_kernel_uses_parent_installation_directory() {
+        let kernel = Path::new("/usr/local/Wolfram/WolframEngine/15.0/Executables/WolframKernel");
+
+        assert_eq!(
+            reported_kernel_installation_directory(kernel),
+            Some(PathBuf::from("/usr/local/Wolfram/WolframEngine/15.0"))
+        );
+    }
+
+    #[test]
+    fn kernel_discovery_checks_the_installation_root() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let install_dir = env::temp_dir().join(format!(
+            "wolfie-kernel-discovery-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&install_dir).expect("test installation directory should be created");
+        let kernel = install_dir.join(kernel_binary_name());
+        fs::write(&kernel, []).expect("test kernel should be created");
+
+        assert_eq!(kernel_path_in_installation(&install_dir), Some(kernel));
+
+        fs::remove_dir_all(install_dir).expect("test installation directory should be removed");
+    }
 }
 
 static KERNEL_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -562,20 +643,35 @@ fn discover_kernel_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    if let Ok(install_dir) = wolfram_installation_directory() {
-        if let Some(candidate) = native_kernel_path(&install_dir)
-            && candidate.exists()
+    if let Ok(reported_kernel) = wolframscript_showkernels_kernel_path() {
+        if let Some(install_dir) = reported_kernel_installation_directory(&reported_kernel)
+            && let Some(candidate) = kernel_path_in_installation(&install_dir)
         {
             return candidate;
         }
 
-        let candidate = install_dir.join("Executables").join(kernel_binary_name());
-        if candidate.exists() {
-            return candidate;
+        if reported_kernel.exists() {
+            return reported_kernel;
         }
     }
 
+    if let Ok(app) = WolframApp::try_default()
+        && let Some(candidate) = kernel_path_in_installation(&app.installation_directory())
+    {
+        return candidate;
+    }
+
     PathBuf::from(kernel_binary_name())
+}
+
+fn kernel_path_in_installation(install_dir: &Path) -> Option<PathBuf> {
+    let candidates = [
+        native_kernel_path(install_dir),
+        Some(install_dir.join(kernel_binary_name())),
+        Some(install_dir.join("Executables").join(kernel_binary_name())),
+    ];
+
+    candidates.into_iter().flatten().find(|path| path.exists())
 }
 
 fn native_kernel_path(install_dir: &Path) -> Option<PathBuf> {
@@ -611,17 +707,7 @@ fn kernel_binary_name() -> &'static str {
     }
 }
 
-fn wolfram_installation_directory() -> Result<PathBuf> {
-    if let Ok(path) = wolframscript_showkernels_installation_directory() {
-        return Ok(path);
-    }
-
-    WolframApp::try_default()
-        .map(|app| app.installation_directory())
-        .context("failed to discover Wolfram installation")
-}
-
-fn wolframscript_showkernels_installation_directory() -> Result<PathBuf> {
+fn wolframscript_showkernels_kernel_path() -> Result<PathBuf> {
     let output = Command::new("wolframscript")
         .arg("-showkernels")
         .output()
@@ -634,28 +720,52 @@ fn wolframscript_showkernels_installation_directory() -> Result<PathBuf> {
         );
     }
 
-    let stdout =
-        String::from_utf8(output.stdout).context("wolframscript returned invalid UTF-8")?;
-    for line in stdout
+    let stdout = String::from_utf8(output.stdout)
+        .context("wolframscript returned invalid UTF-8 on stdout")?;
+    let stderr = String::from_utf8(output.stderr)
+        .context("wolframscript returned invalid UTF-8 on stderr")?;
+
+    showkernels_kernel_path_from_output(&stdout)
+        .or_else(|| showkernels_kernel_path_from_output(&stderr))
+        .context("wolframscript -showkernels did not return a Wolfram kernel path")
+}
+
+fn showkernels_kernel_path_from_output(output: &str) -> Option<PathBuf> {
+    output
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let path = PathBuf::from(line);
-        if path
-            .file_name()
-            .is_some_and(|name| name == kernel_binary_name())
-            && path.parent().and_then(Path::file_name) == Some("Executables".as_ref())
-        {
-            return path
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-                .context("wolframscript returned a kernel path without an installation directory");
-        }
-    }
+        .map(|line| line.trim_matches('"'))
+        .filter_map(|line| {
+            let path = PathBuf::from(line);
+            let name = path.file_name()?.to_str()?;
+            let priority = if name.eq_ignore_ascii_case("WolframKernel")
+                || name.eq_ignore_ascii_case("WolframKernel.exe")
+            {
+                0
+            } else if name.eq_ignore_ascii_case("wolfram")
+                || name.eq_ignore_ascii_case("wolfram.exe")
+            {
+                1
+            } else {
+                return None;
+            };
+            Some((priority, path))
+        })
+        .min_by_key(|(priority, _)| *priority)
+        .map(|(_, path)| path)
+}
 
-    bail!("wolframscript -showkernels did not return a WolframKernel path")
+fn reported_kernel_installation_directory(kernel_path: &Path) -> Option<PathBuf> {
+    let parent = kernel_path.parent()?;
+    if parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("Executables"))
+    {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
 }
 
 pub(crate) fn kernel_status(kernel: &SharedKernel) -> Result<KernelStatus> {

@@ -337,16 +337,19 @@ impl WstpKernelClient {
             .map_err(|err| anyhow!("failed to create WSTP listener: {err:?}"))?;
         let link_name = link.link_name();
         let spawn_start = Instant::now();
-        let mut command = Command::new(path);
+        let mut command = Command::new(&path);
         configure_kernel_launch_command(&mut command, &link_name, link_options, link_mode);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         isolate_kernel_from_terminal_interrupts(&mut command);
-        let process = command
-            .spawn()
-            .context("failed to launch WolframKernel in WSTP mode")?;
+        let process = command.spawn().with_context(|| {
+            format!(
+                "failed to launch Wolfram kernel {} in WSTP mode",
+                path.display()
+            )
+        })?;
         profile_duration("wstp.launch.spawn", spawn_start.elapsed(), "");
 
         let activate_start = Instant::now();

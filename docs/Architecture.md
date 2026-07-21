@@ -84,13 +84,19 @@ flowchart TD
     ShowKernels --> ShowOk{Found installation dir?}
     ShowOk -->|yes| InstallDir[Use discovered install dir]
     ShowOk -->|no| AppDiscovery[wolfram-app-discovery]
-    AppDiscovery --> InstallDir
+    AppDiscovery --> AppCandidate{Kernel found in discovered installation?}
+    AppCandidate -->|yes| AppPath[Native/root/Executables kernel]
+    AppCandidate -->|no| PathFallback[WolframKernel on PATH]
 
     InstallDir --> NativeCandidate{Native kernel binary exists?}
     NativeCandidate -->|yes| NativePath[SystemFiles/Kernel/Binaries/SystemID/WolframKernel]
-    NativeCandidate -->|no| ExecCandidate{Executables/WolframKernel exists?}
+    NativeCandidate -->|no| RootCandidate{Installation root WolframKernel exists?}
+    RootCandidate -->|yes| RootPath[Installation root WolframKernel]
+    RootCandidate -->|no| ExecCandidate{Executables/WolframKernel exists?}
     ExecCandidate -->|yes| ExecPath[Executables/WolframKernel]
-    ExecCandidate -->|no| PathFallback[WolframKernel on PATH]
+    ExecCandidate -->|no| ReportedCandidate{Reported wolfram launcher exists?}
+    ReportedCandidate -->|yes| ReportedPath[Reported wolfram launcher]
+    ReportedCandidate -->|no| AppDiscovery
 ```
 
 ## WSTP launch pipeline
